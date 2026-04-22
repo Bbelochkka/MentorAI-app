@@ -5,7 +5,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
-from .document_processing import extract_document_blocks_from_text, normalize_text
+from .document_processing import extract_document_blocks_from_text, normalize_text, strip_docx_heading_markers
 
 SERVICE_PATTERNS = [
     r"^внутренний документ компании$",
@@ -16,6 +16,8 @@ SERVICE_PATTERNS = [
     r"^что проверяет$",
     r"^содержание$",
     r"^внутренний пакет для адаптации$",
+    r"^редакция\b",
+    r"^[а-яё\- ]+,\s*20\d{2}$",
 ]
 
 POLICY_KEYWORDS = [
@@ -120,6 +122,7 @@ def _clean_service_lines(text: str) -> str:
 
     for line in lines:
         stripped = line.strip()
+        stripped = strip_docx_heading_markers(stripped)
         if not stripped:
             cleaned.append("")
             continue
@@ -194,7 +197,7 @@ def _is_service_section(title: str, body: str) -> bool:
     title_l = _strip_numbering(title).lower()
     body_l = body.lower()
 
-    if not body.strip() and _matches_any(title_l, SERVICE_PATTERNS):
+    if _matches_any(title_l, SERVICE_PATTERNS):
         return True
     if title_l in {"содержание", "назначение", "что проверяет"}:
         return True
@@ -381,6 +384,7 @@ def _convert_fake_single_column_tables(text: str) -> str:
 
 
 def _cleanup_rendered_text(text: str) -> str:
+    text = strip_docx_heading_markers(text)
     text = text.replace("<br/>", "\n").replace("<br>", "\n")
     text = _convert_fake_single_column_tables(text)
     text = re.sub(r"\[\s*конкретная дата\s*\]", "", text, flags=re.IGNORECASE)
@@ -511,7 +515,7 @@ def _render_section_content(
     include_remember: bool = False,
     llm_provider: Any | None = None,
 ) -> str:
-    title = _strip_numbering(section["title"])
+    title = strip_docx_heading_markers(_strip_numbering(section["title"]))
     parts: list[str] = []
     body_paragraphs: list[str] = []
 
@@ -566,16 +570,17 @@ def _build_sections_from_blocks(blocks: list[dict[str, Any]], document_title: st
     has_heading = any(block["type"] == "heading" for block in blocks)
 
     if not has_heading:
-        sections = [{"title": document_title, "blocks": blocks, "heading_level": 1}]
+        sections = [{"title": document_title, "blocks": blocks, "heading_level": 1, "heading_source": None}]
     else:
         for block in blocks:
             if block["type"] == "heading":
-                if current and current["blocks"]:
+                if current and (current["blocks"] or current.get("heading_source") == "docx_h1"):
                     sections.append(current)
                 current = {
-                    "title": block["text"],
+                    "title": strip_docx_heading_markers(block["text"]),
                     "blocks": [],
                     "heading_level": block.get("heading_level") or _heading_level_from_title(block["text"]) or 1,
+                    "heading_source": block.get("heading_source"),
                 }
             else:
                 if current is None:
@@ -583,17 +588,19 @@ def _build_sections_from_blocks(blocks: list[dict[str, Any]], document_title: st
                         "title": f"Раздел {untitled_index}",
                         "blocks": [],
                         "heading_level": 1,
+                        "heading_source": None,
                     }
                     untitled_index += 1
                 current["blocks"].append(block)
-        if current and current["blocks"]:
+        if current and (current["blocks"] or current.get("heading_source") == "docx_h1"):
             sections.append(current)
 
     prepared: list[dict[str, Any]] = []
     for index, section in enumerate(sections, start=1):
         body = normalize_text("\n\n".join(block["text"] for block in section["blocks"] if block["text"].strip()))
-        title = normalize_text(section["title"])
-        if not body.strip():
+        title = normalize_text(strip_docx_heading_markers(section["title"]))
+        heading_source = section.get("heading_source")
+        if not body.strip() and heading_source != "docx_h1":
             continue
         if _is_service_section(title, body):
             continue
@@ -603,8 +610,9 @@ def _build_sections_from_blocks(blocks: list[dict[str, Any]], document_title: st
                 "id": f"{_fingerprint(document_title)}_{index}",
                 "title": title,
                 "body": body,
-                "kind": _classify_section_kind(title, body, block_types),
+                "kind": _classify_section_kind(title, body, block_types) if body.strip() else "container",
                 "heading_level": section.get("heading_level") or 1,
+                "heading_source": heading_source,
                 "blocks": section["blocks"],
                 "source_documents": [document_title],
                 "family": "",
@@ -612,12 +620,10 @@ def _build_sections_from_blocks(blocks: list[dict[str, Any]], document_title: st
                 "document_order": index,
             }
         )
-
     for section in prepared:
         section["family"] = _section_family(section)
 
     return prepared
-
 
 def prepare_documents_for_course_generation(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
@@ -654,7 +660,7 @@ def _dedupe_section_list(sections: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _module_title_from_section(section: dict[str, Any], index: int) -> str:
-    title = _strip_numbering(section["title"])
+    title = strip_docx_heading_markers(_strip_numbering(section["title"]))
     title = re.sub(r"^модуль\s+\d+\.?\s*", "", title, flags=re.IGNORECASE).strip()
     if not title or re.fullmatch(r"модуль\s*\d*", title, flags=re.IGNORECASE):
         mapping = {
@@ -679,36 +685,64 @@ def _build_topics_and_modules(
         if not sections:
             continue
 
-        has_top_level = any(section.get("heading_level", 1) == 1 for section in sections)
+        explicit_h1_sections = [section for section in sections if section.get("heading_source") == "docx_h1"]
         document_modules: list[dict[str, Any]] = []
 
-        if not has_top_level:
-            document_modules.append({
-                "title": document["title"],
-                "topics": sections,
-            })
-        else:
+        if explicit_h1_sections:
+            intro_topics: list[dict[str, Any]] = []
             current_module: dict[str, Any] | None = None
+
             for section in sections:
-                level = section.get("heading_level", 1)
-                if level == 1:
+                if section.get("heading_source") == "docx_h1":
                     if current_module:
                         document_modules.append(current_module)
                     current_module = {
                         "title": _module_title_from_section(section, len(modules) + len(document_modules) + 1),
-                        "topics": [section],
+                        "topics": [section] if (section.get("body") or "").strip() else [],
                     }
                 else:
                     if current_module is None:
-                        current_module = {
-                            "title": document["title"],
-                            "topics": [section],
-                        }
+                        intro_topics.append(section)
                     else:
                         current_module["topics"].append(section)
 
+            if intro_topics:
+                document_modules.insert(0, {
+                    "title": "Введение",
+                    "topics": intro_topics,
+                })
             if current_module:
                 document_modules.append(current_module)
+        else:
+            has_top_level = any(section.get("heading_level", 1) == 1 for section in sections)
+
+            if not has_top_level:
+                document_modules.append({
+                    "title": document["title"],
+                    "topics": sections,
+                })
+            else:
+                current_module = None
+                for section in sections:
+                    level = section.get("heading_level", 1)
+                    if level == 1:
+                        if current_module:
+                            document_modules.append(current_module)
+                        current_module = {
+                            "title": _module_title_from_section(section, len(modules) + len(document_modules) + 1),
+                            "topics": [section],
+                        }
+                    else:
+                        if current_module is None:
+                            current_module = {
+                                "title": document["title"],
+                                "topics": [section],
+                            }
+                        else:
+                            current_module["topics"].append(section)
+
+                if current_module:
+                    document_modules.append(current_module)
 
         for module in document_modules:
             module_title = module["title"]
@@ -732,7 +766,6 @@ def _build_topics_and_modules(
             )
 
     return modules
-
 
 def _module_matches_spec(spec: dict[str, Any], module_title: str) -> bool:
     scope = spec.get("scope", "auto")
@@ -784,7 +817,7 @@ def build_course_draft_from_documents(
         rendered_topics: list[dict[str, str]] = []
 
         for topic in module["topics"]:
-            topic_title = _strip_numbering(topic["title"])
+            topic_title = strip_docx_heading_markers(_strip_numbering(topic["title"]))
             topic_remember = module_remember or any(
                 _topic_matches_spec(spec, module_title, topic)
                 for spec in remember_specs

@@ -46,12 +46,12 @@ from .schemas import (
     TestSummaryResponse,
     TestListResponse,
     TestStatusUpdateRequest,
+    TestDraftUpdateRequest,
 )
 from .security import FAKE_USER, create_access_token, get_current_user
 from .test_generation import (
     build_test_draft_from_course,
     parse_desired_question_count,
-    parse_required_questions,
     validate_generated_test,
 )
 logger = logging.getLogger(__name__)
@@ -1253,6 +1253,37 @@ def _normalize_test_title(title: str) -> str:
     return value
 
 
+def _normalize_test_question_text(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Текст вопроса не может быть пустым")
+    return value
+
+
+def _normalize_test_option_text(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Текст варианта ответа не может быть пустым")
+    return value
+
+
+def _validate_test_update_payload(payload: TestDraftUpdateRequest) -> None:
+    _normalize_test_title(payload.title)
+    if not payload.questions:
+        raise HTTPException(status_code=400, detail="В тесте должен быть хотя бы один вопрос")
+    for index, question in enumerate(payload.questions, start=1):
+        _normalize_test_question_text(question.question_text)
+        if len(question.options) < 2:
+            raise HTTPException(status_code=400, detail=f"Вопрос {index} должен содержать минимум два варианта ответа")
+        correct_count = 0
+        for option in question.options:
+            _normalize_test_option_text(option.text)
+            if option.is_correct:
+                correct_count += 1
+        if correct_count != 1:
+            raise HTTPException(status_code=400, detail=f"Вопрос {index} должен содержать ровно один правильный ответ")
+
+
 @app.get("/api/tests", response_model=TestListResponse)
 def list_tests(current_user: dict = Depends(get_current_user)) -> TestListResponse:
     with get_postgres_connection() as conn:
@@ -1290,6 +1321,59 @@ def list_tests(current_user: dict = Depends(get_current_user)) -> TestListRespon
 
 @app.get("/api/tests/{test_id}", response_model=TestDraftResponse)
 def get_test(test_id: int, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+    return fetch_test_draft_from_db(test_id, current_user["company_id"])
+
+
+@app.put("/api/tests/{test_id}", response_model=TestDraftResponse)
+def update_test_draft(test_id: int, payload: TestDraftUpdateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+    _validate_test_update_payload(payload)
+    title = _normalize_test_title(payload.title)
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.id, tv.id
+                FROM tests t
+                JOIN test_versions tv
+                  ON tv.test_id = t.id
+                 AND tv.version_number = t.current_version_no
+                WHERE t.id = %s AND t.company_id = %s
+                """,
+                (test_id, current_user["company_id"]),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Тест не найден")
+            _, version_id = row
+
+            cur.execute("UPDATE tests SET title = %s, updated_at = now() WHERE id = %s", (title, test_id))
+            cur.execute("SELECT id FROM questions WHERE test_version_id = %s", (version_id,))
+            question_ids = [r[0] for r in cur.fetchall()]
+            if question_ids:
+                cur.execute("DELETE FROM question_options WHERE question_id = ANY(%s)", (question_ids,))
+            cur.execute("DELETE FROM questions WHERE test_version_id = %s", (version_id,))
+
+            for question_index, question in enumerate(payload.questions, start=1):
+                cur.execute(
+                    """
+                    INSERT INTO questions (test_version_id, topic_id, question_text, question_type, weight, sort_order)
+                    VALUES (%s, NULL, %s, 'single_choice', 1.0, %s)
+                    RETURNING id
+                    """,
+                    (version_id, _normalize_test_question_text(question.question_text), question_index),
+                )
+                question_id = cur.fetchone()[0]
+                for option_index, option in enumerate(question.options, start=1):
+                    cur.execute(
+                        """
+                        INSERT INTO question_options (question_id, option_text, is_correct, sort_order)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (question_id, _normalize_test_option_text(option.text), option.is_correct, option_index),
+                    )
+        conn.commit()
+
     return fetch_test_draft_from_db(test_id, current_user["company_id"])
 
 
@@ -1336,7 +1420,6 @@ def delete_test(test_id: int, current_user: dict = Depends(get_current_user)) ->
 def generate_test_draft(payload: TestGenerateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
     title = _normalize_test_title(payload.title)
     question_count = parse_desired_question_count(payload.desired_question_count)
-    required_questions = parse_required_questions(payload.required_questions)
 
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
@@ -1402,7 +1485,7 @@ def generate_test_draft(payload: TestGenerateRequest, current_user: dict = Depen
             course_title=course_title,
             modules=modules,
             question_count=question_count,
-            required_questions=required_questions,
+            required_questions=[],
             provider=provider,
         )
         validated = validate_generated_test(generated, expected_count=question_count)

@@ -301,7 +301,6 @@ export interface TestGeneratePayload {
   title: string;
   course_id: number;
   desired_question_count?: string;
-  required_questions?: string;
 }
 
 export interface TestOptionDto {
@@ -316,6 +315,25 @@ export interface TestQuestionDto {
   question_text: string;
   order_index: number;
   options: TestOptionDto[];
+}
+
+export interface TestOptionUpdatePayload {
+  id?: number;
+  text: string;
+  is_correct: boolean;
+  order_index?: number;
+}
+
+export interface TestQuestionUpdatePayload {
+  id?: number;
+  question_text: string;
+  order_index?: number;
+  options: TestOptionUpdatePayload[];
+}
+
+export interface TestDraftUpdatePayload {
+  title: string;
+  questions: TestQuestionUpdatePayload[];
 }
 
 export interface TestDraftDto {
@@ -402,6 +420,23 @@ export async function updateTestStatus(testId: number, payload: TestStatusUpdate
 export async function deleteTest(testId: number): Promise<{ message: string }> {
   const response = await authorizedFetch(`${API_URL}/api/tests/${testId}`, {
     method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+
+export async function updateTestDraft(testId: number, payload: TestDraftUpdatePayload): Promise<TestDraftDto> {
+  const response = await authorizedFetch(`${API_URL}/api/tests/${testId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
   });
 
   if (!response.ok) {

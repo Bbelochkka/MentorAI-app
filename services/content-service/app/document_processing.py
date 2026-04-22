@@ -13,6 +13,8 @@ from docx.text.paragraph import Paragraph
 from pypdf import PdfReader
 
 INLINE_BREAK = " / "
+DOCX_H1_MARKER = "[[DOCX_H1]]"
+
 
 
 def normalize_text(text: str) -> str:
@@ -22,6 +24,28 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+
+def _is_docx_heading1_style(style_name: str | None) -> bool:
+    if not style_name:
+        return False
+    normalized = style_name.strip().lower()
+    return (
+        normalized in {"heading 1", "заголовок 1"}
+        or normalized.startswith("heading 1")
+        or normalized.startswith("заголовок 1")
+    )
+
+
+def _encode_docx_heading1(text: str) -> str:
+    cleaned = normalize_text(text)
+    if not cleaned:
+        return ""
+    return f"{DOCX_H1_MARKER} {cleaned}"
+
+
+def strip_docx_heading_markers(text: str) -> str:
+    text = re.sub(rf"^\s*{re.escape(DOCX_H1_MARKER)}\s*", "", text)
+    return text.strip()
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
     for encoding in ("utf-8", "cp1251", "latin-1"):
@@ -168,7 +192,14 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
     for block in iter_block_items(document):
         if isinstance(block, Paragraph):
             text = _paragraph_text(block)
-            if text:
+            if not text:
+                continue
+            style_name = getattr(getattr(block, "style", None), "name", None)
+            if _is_docx_heading1_style(style_name):
+                encoded = _encode_docx_heading1(text)
+                if encoded:
+                    blocks.append(encoded)
+            else:
                 blocks.append(text)
         elif isinstance(block, Table):
             table_text = table_to_markdown(block)
@@ -176,7 +207,6 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
                 blocks.append(table_text)
 
     return "\n\n".join(blocks)
-
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     reader = PdfReader(BytesIO(file_bytes))
@@ -209,41 +239,50 @@ def _heading_level(text: str) -> int | None:
     if not line:
         return None
 
-    match = re.match(r"^(\d+(?:\.\d+)*)\.?\s+\S+", line)
+    if line.startswith(DOCX_H1_MARKER):
+        return 1
+
+    match = re.match(r"^(\d+(?:\.\d+)*)\.?\s+(\S+)", strip_docx_heading_markers(line))
     if match:
-        return match.group(1).count(".") + 1
+        first_token = match.group(2)
+        first_char = first_token[0]
+        if first_char.isupper() or first_char in {'«', '"', '('}:
+            return match.group(1).count(".") + 1
 
     if len(line) <= 90 and len(line.split()) <= 10 and not line.endswith((".", "!", "?", ";")):
-        if line and line[0].isupper():
+        if line and strip_docx_heading_markers(line)[0].isupper():
             return 1
 
     return None
 
 
-def _block_type(text: str) -> tuple[str, int | None]:
+def _block_type(text: str) -> tuple[str, int | None, str | None]:
     block = text.strip()
     if not block:
-        return "empty", None
+        return "empty", None, None
+
+    if block.startswith(DOCX_H1_MARKER):
+        return "heading", 1, "docx_h1"
 
     heading_level = _heading_level(block)
     if heading_level is not None and "\n" not in block:
-        return "heading", heading_level
+        heading_source = "numbered" if re.match(r"^(\d+(?:\.\d+)*)\.?\s+\S+", strip_docx_heading_markers(block)) else "heuristic"
+        return "heading", heading_level, heading_source
 
     lines = [line.strip() for line in block.splitlines() if line.strip()]
     if len(lines) >= 2 and sum(1 for line in lines if line.count("|") >= 2) >= 2:
-        return "table", None
+        return "table", None, None
 
     if any(line.startswith("Q:") for line in lines) or any(line.startswith("A:") for line in lines):
-        return "qa_block", None
+        return "qa_block", None, None
 
     if any("☐" in line or "☑" in line for line in lines):
-        return "checklist", None
+        return "checklist", None, None
 
     if lines and all(re.match(r"^(?:[-*•]|\d+[.)])\s+", line) for line in lines if line):
-        return "bullet_list", None
+        return "bullet_list", None, None
 
-    return "paragraph", None
-
+    return "paragraph", None, None
 
 def extract_document_blocks_from_text(text: str) -> list[dict[str, Any]]:
     normalized = normalize_text(text)
@@ -254,13 +293,15 @@ def extract_document_blocks_from_text(text: str) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
 
     for index, raw_block in enumerate(raw_blocks, start=1):
-        block_type, heading_level = _block_type(raw_block)
+        block_type, heading_level, heading_source = _block_type(raw_block)
+        block_text = strip_docx_heading_markers(raw_block) if heading_source == "docx_h1" else raw_block
         blocks.append(
             {
                 "index": index,
                 "type": block_type,
                 "heading_level": heading_level,
-                "text": raw_block,
+                "heading_source": heading_source,
+                "text": block_text,
             }
         )
 

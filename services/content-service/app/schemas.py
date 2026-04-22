@@ -115,7 +115,6 @@ class TestGenerateRequest(BaseModel):
     title: str
     course_id: int
     desired_question_count: str | None = None
-    required_questions: str | None = None
 
 
 class TestOptionResponse(BaseModel):
@@ -154,6 +153,25 @@ class TestSummaryResponse(BaseModel):
 
 class TestListResponse(BaseModel):
     items: list[TestSummaryResponse]
+
+
+class TestOptionUpdateRequest(BaseModel):
+    id: int | None = None
+    text: str
+    is_correct: bool
+    order_index: int | None = None
+
+
+class TestQuestionUpdateRequest(BaseModel):
+    id: int | None = None
+    question_text: str
+    order_index: int | None = None
+    options: list[TestOptionUpdateRequest]
+
+
+class TestDraftUpdateRequest(BaseModel):
+    title: str
+    questions: list[TestQuestionUpdateRequest]
 
 
 class TestStatusUpdateRequest(BaseModel):

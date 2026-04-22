@@ -1,5 +1,6 @@
+
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   CourseSummaryDto,
   TestSummaryDto,
@@ -19,7 +20,6 @@ export function TestsPage() {
   const [title, setTitle] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
   const [desiredQuestionCount, setDesiredQuestionCount] = useState('10');
-  const [requiredQuestions, setRequiredQuestions] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,10 +65,8 @@ export function TestsPage() {
         title: title.trim(),
         course_id: selectedCourseId,
         desired_question_count: desiredQuestionCount.trim() || undefined,
-        required_questions: requiredQuestions.trim() || undefined,
       });
       setTitle('');
-      setRequiredQuestions('');
       setDesiredQuestionCount('10');
       setMessage('Черновик теста успешно создан');
       await loadData();
@@ -137,16 +135,6 @@ export function TestsPage() {
             <label className="ui-field__label">Желаемое количество вопросов</label>
             <input className="ui-input" value={desiredQuestionCount} onChange={(event) => setDesiredQuestionCount(event.target.value)} placeholder="От 1 до 30" />
           </div>
-          <div className="ui-field">
-            <label className="ui-field__label">Обязательные вопросы</label>
-            <textarea
-              className="ui-textarea"
-              rows={4}
-              value={requiredQuestions}
-              onChange={(event) => setRequiredQuestions(event.target.value)}
-              placeholder={'Каждый пункт с новой строки или через ;\nНапример:\nматрица скидок\nKPI менеджера\nправила пилотного периода'}
-            />
-          </div>
         </div>
 
         {selectedCourse ? <p className="ui-page__subtitle" style={{ marginTop: 14 }}>Источник: <strong>{selectedCourse.title}</strong></p> : null}
@@ -167,29 +155,33 @@ export function TestsPage() {
         <div className="ui-card ui-empty-card">Тесты ещё не созданы.</div>
       ) : (
         <div className="ui-list">
-          {tests.map((test) => (
-            <article key={test.test_id} className="ui-card ui-card--padded course-list-card">
-              <div className="course-list-card__body">
-                <div className="course-list-card__left">
-                  <div className="course-list-card__top">
+          {tests.map((test) => {
+            const isPublished = test.status === 'published';
+            return (
+              <article key={test.test_id} className="ui-card ui-card--padded ui-course-card">
+                <div>
+                  <div className="ui-course-card__meta">
                     <StatusBadge status={test.status} />
-                    <Button variant={test.status === 'published' ? 'outline' : 'primary'} onClick={() => void handlePublishToggle(test)}>
-                      {test.status === 'published' ? 'Снять с публикации' : 'Опубликовать'}
+                    <Button variant={isPublished ? 'outline' : 'primary'} onClick={() => void handlePublishToggle(test)}>
+                      {isPublished ? 'Снять с публикации' : 'Опубликовать'}
                     </Button>
                   </div>
-                  <h2 className="course-list-card__title">{test.title}</h2>
-                  <p className="course-list-card__description">Курс-источник: {test.course_title}</p>
-                  <p className="course-list-card__meta">Вопросов: {test.question_count}</p>
+                  <h2 className="ui-course-card__title">{test.title}</h2>
+                  <p className="ui-course-card__description">Курс-источник: {test.course_title}</p>
+                  <p className="ui-course-card__documents">Вопросов: {test.question_count}</p>
                 </div>
-                <div className="course-list-card__actions">
-                  <Link className="ui-btn ui-btn--primary ui-btn--sm" to={`/app/tests/${test.test_id}`}>
+
+                <div className="ui-course-card__actions">
+                  <Button variant="primary" onClick={() => navigate(`/app/tests/${test.test_id}`)} fullWidth>
                     Перейти
-                  </Link>
-                  <Button variant="outline" onClick={() => void handleDelete(test.test_id)}>Удалить</Button>
+                  </Button>
+                  <Button variant="outline" onClick={() => void handleDelete(test.test_id)} fullWidth>
+                    Удалить
+                  </Button>
                 </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
