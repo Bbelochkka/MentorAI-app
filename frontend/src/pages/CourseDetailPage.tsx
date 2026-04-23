@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { CourseDraftDto, getCourse, updateCourseDraft, updateCourseStatus } from '../api';
+import { CourseDraftDto, TestSummaryDto, getCourse, getStoredUser, getTests, isLearnerUser, updateCourseDraft, updateCourseStatus } from '../api';
 import { Button } from '../components/ui/Button';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import '../styles/ui.css';
@@ -38,6 +38,8 @@ function MarkdownContent({ content }: { content: string }) {
 export function CourseDetailPage() {
   const { courseId } = useParams();
   const navigate = useNavigate();
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
   const tempIdRef = useRef(-1);
 
   const [selectedCourse, setSelectedCourse] = useState<CourseDraftDto | null>(null);
@@ -46,6 +48,7 @@ export function CourseDetailPage() {
   const [isLoadingCourse, setIsLoadingCourse] = useState(true);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [relatedTest, setRelatedTest] = useState<TestSummaryDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -74,6 +77,14 @@ export function CourseDetailPage() {
       setSelectedCourse(course);
       setEditableCourse(null);
       setIsEditingDraft(false);
+
+      try {
+        const tests = await getTests();
+        const matchedTest = tests.find((test) => test.course_id === course.course_id) ?? null;
+        setRelatedTest(matchedTest);
+      } catch {
+        setRelatedTest(null);
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось открыть курс');
     } finally {
@@ -335,28 +346,36 @@ export function CourseDetailPage() {
           </div>
 
           <div className="ui-course-card__actions" style={{ justifyContent: 'flex-start' }}>
-            {!isEditingDraft ? (
-              <>
-                <Button variant="outline" onClick={handleStartEditing} fullWidth>
-                  Редактировать курс
-                </Button>
-                <Button variant="primary" onClick={() => void handlePublishToggle()} disabled={isUpdatingStatus} fullWidth>
-                  {courseToRender.status === 'published' ? 'Снять с публикации' : 'Опубликовать курс'}
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button variant="primary" onClick={() => void handleSaveDraft()} disabled={isSavingDraft} fullWidth>
-                  {isSavingDraft ? 'Сохранение…' : 'Сохранить изменения'}
-                </Button>
-                <Button variant="outline" onClick={handleCancelEditing} disabled={isSavingDraft} fullWidth>
-                  Отменить
-                </Button>
-                <Button variant="outline" onClick={handleAddModule} disabled={isSavingDraft} fullWidth>
-                  Добавить модуль
-                </Button>
-              </>
-            )}
+            {relatedTest && !isEditingDraft ? (
+              <Button variant="primary" onClick={() => navigate(`/app/tests/${relatedTest.test_id}`)} fullWidth>
+                Перейти к тесту
+              </Button>
+            ) : null}
+
+            {!learner ? (
+              !isEditingDraft ? (
+                <>
+                  <Button variant="outline" onClick={handleStartEditing} fullWidth>
+                    Редактировать курс
+                  </Button>
+                  <Button variant="primary" onClick={() => void handlePublishToggle()} disabled={isUpdatingStatus} fullWidth>
+                    {courseToRender.status === 'published' ? 'Снять с публикации' : 'Опубликовать курс'}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="primary" onClick={() => void handleSaveDraft()} disabled={isSavingDraft} fullWidth>
+                    {isSavingDraft ? 'Сохранение…' : 'Сохранить изменения'}
+                  </Button>
+                  <Button variant="outline" onClick={handleCancelEditing} disabled={isSavingDraft} fullWidth>
+                    Отменить
+                  </Button>
+                  <Button variant="outline" onClick={handleAddModule} disabled={isSavingDraft} fullWidth>
+                    Добавить модуль
+                  </Button>
+                </>
+              )
+            ) : null}
           </div>
         </div>
       </div>

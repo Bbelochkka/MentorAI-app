@@ -181,23 +181,33 @@ img { max-width: 100%; }
 
 /* app layout */
 .app-layout {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 240px 1fr;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .sidebar {
-  min-height: 100vh;
+  height: 100vh;
   background: #fffdfa;
   border-right: 1px solid var(--border);
   padding: 28px 20px 24px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  overflow: hidden;
 }
 
-.sidebar-top { display: flex; flex-direction: column; gap: 28px; }
+.sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .sidebar-brand { font-size: 26px; font-weight: 700; line-height: 1; }
 .sidebar-nav { display: flex; flex-direction: column; gap: 8px; }
 .sidebar-link {
@@ -214,7 +224,14 @@ img { max-width: 100%; }
 .sidebar-link.active { background: #f2eadf; color: #4b3f39; font-weight: 600; }
 .sidebar-link__icon { width: 18px; height: 18px; flex-shrink: 0; }
 .sidebar-link__label { font-size: 16px; }
-.sidebar-bottom { padding-top: 24px; }
+
+.sidebar-bottom {
+  padding-top: 24px;
+  margin-top: auto;
+  flex-shrink: 0;
+  background: #fffdfa;
+}
+
 .chatbot-shortcut {
   display: flex;
   align-items: center;
@@ -225,7 +242,13 @@ img { max-width: 100%; }
 }
 .chatbot-shortcut:hover { background: #f7f1e7; }
 .chatbot-shortcut__icon { width: 18px; height: 18px; flex-shrink: 0; }
-.app-content { min-height: 100vh; background: var(--bg); padding: 32px 36px; }
+
+.app-content {
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 32px 36px;
+}
 
 .page-title {
   margin: 0 0 24px;
@@ -576,9 +599,27 @@ img { max-width: 100%; }
   .login-hero { min-height: 58vh; }
   .login-panel { min-height: auto; border-left: none; border-top: 1px solid var(--border); padding: 36px 20px 48px; }
   .login-card { max-width: 420px; }
-  .app-layout { grid-template-columns: 1fr; }
-  .sidebar { min-height: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  .app-content { padding: 24px 20px; }
+  .app-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
+  }
+  .sidebar {
+    height: auto;
+    min-height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+  .sidebar-top {
+    overflow: visible;
+    min-height: auto;
+  }
+  .app-content {
+    height: auto;
+    overflow: visible;
+    padding: 24px 20px;
+  }
 }
 
 @media (max-width: 960px) {

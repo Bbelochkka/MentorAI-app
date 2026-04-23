@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Sidebar } from '../components/Sidebar';
+import { getStoredUser, isLearnerUser } from '../api';
 import { CoursesPage } from './CoursesPage';
 import { CourseDetailPage } from './CourseDetailPage';
 import { DocumentsPage } from './DocumentsPage';
@@ -18,13 +19,17 @@ function PlaceholderPage({ title, description }: { title: string; description: s
 }
 
 export function DashboardPage() {
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
+  const defaultPath = learner ? 'courses' : 'documents';
+
   return (
     <main className="app-layout">
       <Sidebar />
       <section className="app-content">
         <Routes>
-          <Route path="/" element={<Navigate to="documents" replace />} />
-          <Route path="documents" element={<DocumentsPage />} />
+          <Route path="/" element={<Navigate to={defaultPath} replace />} />
+          <Route path="documents" element={learner ? <Navigate to="/app/courses" replace /> : <DocumentsPage />} />
           <Route path="courses" element={<CoursesPage />} />
           <Route path="courses/:courseId" element={<CourseDetailPage />} />
           <Route path="tests" element={<TestsPage />} />
@@ -34,7 +39,7 @@ export function DashboardPage() {
             element={
               <PlaceholderPage
                 title="Диалоговый тренажёр"
-                description="Этот раздел позже будет интегрирован с модулем тренажёра."
+                description="Этот раздел позже будет доработан в рамках общего проекта."
               />
             }
           />
@@ -43,7 +48,7 @@ export function DashboardPage() {
             element={
               <PlaceholderPage
                 title="Аналитика"
-                description="Этот раздел позже будет интегрирован с аналитическим модулем."
+                description="Этот раздел позже будет доработан в рамках общего проекта."
               />
             }
           />
@@ -56,7 +61,7 @@ export function DashboardPage() {
               />
             }
           />
-          <Route path="*" element={<Navigate to="documents" replace />} />
+          <Route path="*" element={<Navigate to={defaultPath} replace />} />
         </Routes>
       </section>
     </main>

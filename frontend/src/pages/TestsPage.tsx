@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -7,7 +6,9 @@ import {
   deleteTest,
   generateTestDraft,
   getCourses,
+  getStoredUser,
   getTests,
+  isLearnerUser,
   updateTestStatus,
 } from '../api';
 import { Button } from '../components/ui/Button';
@@ -15,6 +16,9 @@ import { StatusBadge } from '../components/ui/StatusBadge';
 
 export function TestsPage() {
   const navigate = useNavigate();
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
+
   const [courses, setCourses] = useState<CourseSummaryDto[]>([]);
   const [tests, setTests] = useState<TestSummaryDto[]>([]);
   const [title, setTitle] = useState('');
@@ -30,7 +34,9 @@ export function TestsPage() {
     setError(null);
     try {
       const [courseItems, testItems] = await Promise.all([getCourses(), getTests()]);
-      const eligibleCourses = courseItems.filter((course) => course.source_documents && course.source_documents.length > 0);
+      const eligibleCourses = learner
+        ? courseItems
+        : courseItems.filter((course) => course.source_documents && course.source_documents.length > 0);
       setCourses(eligibleCourses);
       setTests(testItems);
       setSelectedCourseId((prev) => prev ?? eligibleCourses[0]?.course_id ?? null);
@@ -43,9 +49,12 @@ export function TestsPage() {
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [learner]);
 
-  const selectedCourse = useMemo(() => courses.find((course) => course.course_id === selectedCourseId) ?? null, [courses, selectedCourseId]);
+  const selectedCourse = useMemo(
+    () => courses.find((course) => course.course_id === selectedCourseId) ?? null,
+    [courses, selectedCourseId]
+  );
 
   async function handleGenerate() {
     if (!title.trim()) {
@@ -106,7 +115,9 @@ export function TestsPage() {
         <div>
           <h1 className="ui-page__title">Тесты</h1>
           <p className="ui-page__subtitle">
-            Выберите один курс вашей компании и сгенерируйте по нему тест с закрытыми вопросами.
+            {learner
+              ? 'Список опубликованных тестов вашей компании.'
+              : 'Выберите один курс вашей компании и сгенерируйте по нему тест с закрытыми вопросами.'}
           </p>
         </div>
       </div>
@@ -114,45 +125,47 @@ export function TestsPage() {
       {error ? <div className="feedback-banner feedback-banner--error">{error}</div> : null}
       {message ? <div className="feedback-banner feedback-banner--success">{message}</div> : null}
 
-      <div className="ui-card ui-card--padded" style={{ marginBottom: 24 }}>
-        <div style={{ display: 'grid', gap: 18, gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
-          <div className="ui-field">
-            <label className="ui-field__label">Название теста</label>
-            <input className="ui-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Например: Итоговый тест по NovaCRM" />
+      {!learner ? (
+        <div className="ui-card ui-card--padded" style={{ marginBottom: 24 }}>
+          <div style={{ display: 'grid', gap: 18, gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
+            <div className="ui-field">
+              <label className="ui-field__label">Название теста</label>
+              <input className="ui-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Например: Итоговый тест по NovaCRM" />
+            </div>
+            <div className="ui-field">
+              <label className="ui-field__label">Курс-источник</label>
+              <select className="ui-input" value={selectedCourseId ?? ''} onChange={(event) => setSelectedCourseId(event.target.value ? Number(event.target.value) : null)}>
+                <option value="">Выберите курс</option>
+                {courses.map((course) => (
+                  <option key={course.course_id} value={course.course_id}>
+                    {course.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="ui-field">
+              <label className="ui-field__label">Желаемое количество вопросов</label>
+              <input className="ui-input" value={desiredQuestionCount} onChange={(event) => setDesiredQuestionCount(event.target.value)} placeholder="От 1 до 30" />
+            </div>
           </div>
-          <div className="ui-field">
-            <label className="ui-field__label">Курс-источник</label>
-            <select className="ui-input" value={selectedCourseId ?? ''} onChange={(event) => setSelectedCourseId(event.target.value ? Number(event.target.value) : null)}>
-              <option value="">Выберите курс</option>
-              {courses.map((course) => (
-                <option key={course.course_id} value={course.course_id}>
-                  {course.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="ui-field">
-            <label className="ui-field__label">Желаемое количество вопросов</label>
-            <input className="ui-input" value={desiredQuestionCount} onChange={(event) => setDesiredQuestionCount(event.target.value)} placeholder="От 1 до 30" />
+
+          {selectedCourse ? <p className="ui-page__subtitle" style={{ marginTop: 14 }}>Источник: <strong>{selectedCourse.title}</strong></p> : null}
+
+          <div className="ui-detail-actions" style={{ marginTop: 18 }}>
+            <Button onClick={() => void handleGenerate()} disabled={isGenerating}>
+              {isGenerating ? 'Генерация…' : 'Сгенерировать тест'}
+            </Button>
+            <Button variant="outline" onClick={() => void loadData()} disabled={isLoading}>
+              Обновить
+            </Button>
           </div>
         </div>
-
-        {selectedCourse ? <p className="ui-page__subtitle" style={{ marginTop: 14 }}>Источник: <strong>{selectedCourse.title}</strong></p> : null}
-
-        <div className="ui-detail-actions" style={{ marginTop: 18 }}>
-          <Button onClick={() => void handleGenerate()} disabled={isGenerating}>
-            {isGenerating ? 'Генерация…' : 'Сгенерировать тест'}
-          </Button>
-          <Button variant="outline" onClick={() => void loadData()} disabled={isLoading}>
-            Обновить
-          </Button>
-        </div>
-      </div>
+      ) : null}
 
       {isLoading ? (
         <div className="ui-card ui-empty-card">Загрузка тестов…</div>
       ) : tests.length === 0 ? (
-        <div className="ui-card ui-empty-card">Тесты ещё не созданы.</div>
+        <div className="ui-card ui-empty-card">{learner ? 'Для вашей компании пока нет опубликованных тестов.' : 'Тесты ещё не созданы.'}</div>
       ) : (
         <div className="ui-list">
           {tests.map((test) => {
@@ -162,22 +175,31 @@ export function TestsPage() {
                 <div>
                   <div className="ui-course-card__meta">
                     <StatusBadge status={test.status} />
-                    <Button variant={isPublished ? 'outline' : 'primary'} onClick={() => void handlePublishToggle(test)}>
-                      {isPublished ? 'Снять с публикации' : 'Опубликовать'}
-                    </Button>
+                    {!learner ? (
+                      <Button variant={isPublished ? 'outline' : 'primary'} onClick={() => void handlePublishToggle(test)}>
+                        {isPublished ? 'Снять с публикации' : 'Опубликовать'}
+                      </Button>
+                    ) : null}
                   </div>
                   <h2 className="ui-course-card__title">{test.title}</h2>
                   <p className="ui-course-card__description">Курс-источник: {test.course_title}</p>
                   <p className="ui-course-card__documents">Вопросов: {test.question_count}</p>
+                  {learner ? (
+                    <p className="ui-course-card__documents">
+                      Лучший результат: {test.best_attempt_percent != null ? `${test.best_attempt_percent.toFixed(2)}%` : '—'}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="ui-course-card__actions">
                   <Button variant="primary" onClick={() => navigate(`/app/tests/${test.test_id}`)} fullWidth>
                     Перейти
                   </Button>
-                  <Button variant="outline" onClick={() => void handleDelete(test.test_id)} fullWidth>
-                    Удалить
-                  </Button>
+                  {!learner ? (
+                    <Button variant="outline" onClick={() => void handleDelete(test.test_id)} fullWidth>
+                      Удалить
+                    </Button>
+                  ) : null}
                 </div>
               </article>
             );

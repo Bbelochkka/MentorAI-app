@@ -7,6 +7,8 @@ import {
   generateCourseDraft,
   getCourses,
   getDocuments,
+  getStoredUser,
+  isLearnerUser,
   updateCourseStatus,
 } from '../api';
 import { Button } from '../components/ui/Button';
@@ -23,6 +25,9 @@ function truncateDescription(value: string, max = 150) {
 
 export function CoursesPage() {
   const navigate = useNavigate();
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
+
   const [documents, setDocuments] = useState<DocumentDto[]>([]);
   const [courses, setCourses] = useState<CourseSummaryDto[]>([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<number[]>([]);
@@ -45,6 +50,11 @@ export function CoursesPage() {
   );
 
   async function loadDocuments() {
+    if (learner) {
+      setDocuments([]);
+      setIsLoadingDocuments(false);
+      return;
+    }
     setIsLoadingDocuments(true);
     try {
       const items = await getDocuments();
@@ -71,7 +81,7 @@ export function CoursesPage() {
   useEffect(() => {
     void loadDocuments();
     void loadCourses();
-  }, []);
+  }, [learner]);
 
   function resetGeneratorForm() {
     setCourseTitle('');
@@ -160,27 +170,25 @@ export function CoursesPage() {
       <div className="ui-page__header">
         <div>
           <h1 className="ui-page__title">Курсы</h1>
-          <p className="ui-page__subtitle">Список черновиков и опубликованных курсов компании.</p>
+          <p className="ui-page__subtitle">
+            {learner ? 'Список опубликованных курсов вашей компании.' : 'Список черновиков и опубликованных курсов компании.'}
+          </p>
         </div>
-        <Button variant="primary" size="md" onClick={() => setShowCreateForm((prev) => !prev)}>
-          {showCreateForm ? 'Скрыть форму' : 'Создать курс'}
-        </Button>
+        {!learner ? (
+          <Button variant="primary" size="md" onClick={() => setShowCreateForm((prev) => !prev)}>
+            {showCreateForm ? 'Скрыть форму' : 'Создать курс'}
+          </Button>
+        ) : null}
       </div>
 
       {error ? <div className="feedback-banner feedback-banner--error">{error}</div> : null}
       {message ? <div className="feedback-banner feedback-banner--success">{message}</div> : null}
 
-      {showCreateForm ? (
+      {!learner && showCreateForm ? (
         <div className="ui-card ui-card--padded" style={{ marginBottom: '24px' }}>
           <div className="ui-field" style={{ marginBottom: '20px' }}>
             <label className="ui-field__label">Название курса</label>
-            <input
-              className="ui-input"
-              type="text"
-              value={courseTitle}
-              onChange={(event) => setCourseTitle(event.target.value)}
-              placeholder="Например, Онбординг менеджеров по продажам"
-            />
+            <input className="ui-input" type="text" value={courseTitle} onChange={(event) => setCourseTitle(event.target.value)} placeholder="Например, Онбординг менеджеров по продажам" />
           </div>
 
           <div style={{ marginBottom: '20px' }}>
@@ -191,19 +199,13 @@ export function CoursesPage() {
             {isLoadingDocuments ? (
               <p style={{ margin: 0, color: '#8f8177' }}>Загрузка документов…</p>
             ) : processedDocuments.length === 0 ? (
-              <p style={{ margin: 0, color: '#8f8177' }}>
-                Нет обработанных документов. Сначала загрузите и обработайте документы на странице «Документы».
-              </p>
+              <p style={{ margin: 0, color: '#8f8177' }}>Нет обработанных документов. Сначала загрузите и обработайте документы на странице «Документы».</p>
             ) : (
               <div style={{ display: 'grid', gap: '12px' }}>
                 {processedDocuments.map((document) => {
                   const checked = selectedDocumentIds.includes(document.id);
                   return (
-                    <label
-                      key={document.id}
-                      className="ui-section"
-                      style={{ cursor: 'pointer', display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '14px 16px' }}
-                    >
+                    <label key={document.id} className="ui-section" style={{ cursor: 'pointer', display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '14px 16px' }}>
                       <input type="checkbox" checked={checked} onChange={() => toggleDocument(document.id)} style={{ marginTop: '2px' }} />
                       <div>
                         <div style={{ fontWeight: 700, color: '#4f433b' }}>{document.file_name}</div>
@@ -221,23 +223,11 @@ export function CoursesPage() {
           <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
             <div className="ui-field">
               <label className="ui-field__label">Что исключить из курса</label>
-              <textarea
-                className="ui-textarea"
-                rows={4}
-                value={additionalRequirements}
-                onChange={(event) => setAdditionalRequirements(event.target.value)}
-                placeholder={'Формат: модуль: ... или тема: ...\nНапример: модуль: Глоссарий; тема: KPI менеджера'}
-              />
+              <textarea className="ui-textarea" rows={4} value={additionalRequirements} onChange={(event) => setAdditionalRequirements(event.target.value)} placeholder={'Формат: модуль: ... или тема: ...\nНапример: модуль: Глоссарий; тема: KPI менеджера'} />
             </div>
             <div className="ui-field">
               <label className="ui-field__label">Где нужен блок «Важно запомнить»</label>
-              <textarea
-                className="ui-textarea"
-                rows={4}
-                value={desiredStructure}
-                onChange={(event) => setDesiredStructure(event.target.value)}
-                placeholder={'Формат: модуль: ... или тема: ...\nНапример: модуль: Целевая аудитория; тема: Коммерческое предложение'}
-              />
+              <textarea className="ui-textarea" rows={4} value={desiredStructure} onChange={(event) => setDesiredStructure(event.target.value)} placeholder={'Формат: модуль: ... или тема: ...\nНапример: модуль: Целевая аудитория; тема: Коммерческое предложение'} />
             </div>
           </div>
 
@@ -255,47 +245,38 @@ export function CoursesPage() {
       {isLoadingCourses ? (
         <div className="ui-card ui-empty-card">Загрузка курсов…</div>
       ) : courses.length === 0 ? (
-        <div className="ui-card ui-empty-card">Курсы ещё не созданы. Сгенерируйте первый курс из обработанных документов.</div>
+        <div className="ui-card ui-empty-card">{learner ? 'Для вашей компании пока нет опубликованных курсов.' : 'Курсы ещё не созданы.'}</div>
       ) : (
         <div className="ui-list">
           {courses.map((course) => {
             const isPublished = course.status === 'published';
-            const linkedDocumentsLabel = Array.isArray(course.source_documents) && course.source_documents.length
-              ? course.source_documents.join(', ')
-              : 'Ручной курс';
-
             return (
               <article key={course.course_id} className="ui-card ui-card--padded ui-course-card">
                 <div>
                   <div className="ui-course-card__meta">
                     <StatusBadge status={course.status} />
-                    <Button
-                      variant={isPublished ? 'outline' : 'primary'}
-                      onClick={() => void handleStatusChange(course.course_id, isPublished ? 'draft' : 'published')}
-                      disabled={isUpdatingStatus === course.course_id}
-                    >
-                      {isPublished ? 'Снять с публикации' : 'Опубликовать'}
-                    </Button>
+                    {!learner ? (
+                      <Button variant={isPublished ? 'outline' : 'primary'} size="sm" onClick={() => void handleStatusChange(course.course_id, isPublished ? 'draft' : 'published')} disabled={isUpdatingStatus === course.course_id}>
+                        {isUpdatingStatus === course.course_id ? 'Сохранение…' : isPublished ? 'Снять с публикации' : 'Опубликовать курс'}
+                      </Button>
+                    ) : null}
                   </div>
                   <h2 className="ui-course-card__title">{course.title}</h2>
-                  <p className="ui-course-card__description">
-                    {truncateDescription(course.description || 'Описание курса пока не заполнено.')}
-                  </p>
-                  <p className="ui-course-card__documents">{linkedDocumentsLabel}</p>
+                  <p className="ui-course-card__description">{truncateDescription(course.description || 'Описание курса не заполнено.')}</p>
+                  {!learner && course.source_documents.length > 0 ? (
+                    <p className="ui-course-card__documents">Источники: {course.source_documents.join(', ')}</p>
+                  ) : null}
                 </div>
 
                 <div className="ui-course-card__actions">
                   <Button variant="primary" onClick={() => navigate(`/app/courses/${course.course_id}`)} fullWidth>
                     Перейти
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => void handleDeleteCourse(course.course_id)}
-                    disabled={isDeletingCourse === course.course_id}
-                    fullWidth
-                  >
-                    {isDeletingCourse === course.course_id ? 'Удаление…' : 'Удалить'}
-                  </Button>
+                  {!learner ? (
+                    <Button variant="outline" onClick={() => void handleDeleteCourse(course.course_id)} fullWidth disabled={isDeletingCourse === course.course_id}>
+                      {isDeletingCourse === course.course_id ? 'Удаление…' : 'Удалить'}
+                    </Button>
+                  ) : null}
                 </div>
               </article>
             );

@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom';
+import { getStoredUser, isLearnerUser } from '../api';
 
 type SidebarSection = 'documents' | 'courses' | 'tests' | 'analytics' | 'trainer' | 'guide';
 
-const menuItems: Array<{ key: SidebarSection; label: string; path: string }> = [
+const allMenuItems: Array<{ key: SidebarSection; label: string; path: string }> = [
   { key: 'documents', label: 'Документы', path: '/app/documents' },
   { key: 'courses', label: 'Курсы', path: '/app/courses' },
   { key: 'tests', label: 'Тесты', path: '/app/tests' },
@@ -12,6 +13,13 @@ const menuItems: Array<{ key: SidebarSection; label: string; path: string }> = [
 ];
 
 export function Sidebar() {
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
+
+  const menuItems = learner
+    ? allMenuItems.filter((item) => item.key !== 'documents')
+    : allMenuItems;
+
   return (
     <aside className="sidebar">
       <div className="sidebar-top">

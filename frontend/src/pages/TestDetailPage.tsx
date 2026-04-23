@@ -1,9 +1,21 @@
-
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { TestDraftDto, deleteTest, getTest, updateTestDraft, updateTestStatus } from '../api';
+import {
+  TestAttemptResultDto,
+  TestAttemptStartDto,
+  TestDraftDto,
+  deleteTest,
+  finishTestAttempt,
+  getStoredUser,
+  getTest,
+  isLearnerUser,
+  startTestAttempt,
+  updateTestDraft,
+  updateTestStatus,
+} from '../api';
 import { Button } from '../components/ui/Button';
 import { StatusBadge } from '../components/ui/StatusBadge';
+import '../styles/ui.css';
 
 type EditableOption = {
   id: number;
@@ -55,9 +67,337 @@ function normalizeForCompare(test: EditableTest | TestDraftDto | null): string {
   });
 }
 
+function LearnerTestView({ test }: { test: TestDraftDto }) {
+  const [attempt, setAttempt] = useState<TestAttemptStartDto | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [localMessage, setLocalMessage] = useState<string | null>(null);
+  const [result, setResult] = useState<TestAttemptResultDto | null>(null);
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<number, number>>({});
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
+
+  const currentQuestion = attempt?.questions[currentQuestionIndex] ?? null;
+  const answeredCount = attempt
+    ? attempt.questions.filter((question) => selectedAnswers[question.id] != null).length
+    : 0;
+
+  async function handleStartAttempt() {
+    setIsStarting(true);
+    setLocalError(null);
+    setLocalMessage(null);
+    try {
+      const data = await startTestAttempt(test.test_id);
+      setAttempt(data);
+      setResult(null);
+      setSelectedAnswers({});
+      setCurrentQuestionIndex(0);
+    } catch (startError) {
+      setLocalError(startError instanceof Error ? startError.message : 'Не удалось начать тест');
+    } finally {
+      setIsStarting(false);
+    }
+  }
+
+  function handleSelectOption(questionId: number, optionId: number) {
+    setSelectedAnswers((current) => ({ ...current, [questionId]: optionId }));
+  }
+
+  function handleGoToQuestion(index: number) {
+    if (!attempt) return;
+    if (index < 0 || index >= attempt.questions.length) return;
+    setCurrentQuestionIndex(index);
+  }
+
+  async function handleFinishAttempt() {
+    if (!attempt) return;
+
+    const unanswered = attempt.questions.filter((question) => selectedAnswers[question.id] == null).length;
+    if (unanswered > 0) {
+      const shouldFinish = window.confirm(
+        `Остались вопросы без ответа (${unanswered}). Завершить тестирование?`
+      );
+      if (!shouldFinish) return;
+    }
+
+    setIsFinishing(true);
+    setLocalError(null);
+    setLocalMessage(null);
+    try {
+      const finishPayload = {
+        answers: attempt.questions.map((question) => ({
+          question_id: question.id,
+          selected_option_id: selectedAnswers[question.id] ?? null,
+        })),
+      };
+      const data = await finishTestAttempt(attempt.attempt_id, finishPayload);
+      setResult(data);
+      setAttempt(null);
+      setLocalMessage(`Тест завершён. Правильных ответов: ${data.correct_answers} из ${data.question_count}.`);
+    } catch (finishError) {
+      setLocalError(finishError instanceof Error ? finishError.message : 'Не удалось завершить тест');
+    } finally {
+      setIsFinishing(false);
+    }
+  }
+
+  if (result) {
+    return (
+      <section className="ui-page">
+        {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
+        {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
+        <div style={{ marginBottom: 18 }}>
+          <Link to="/app/tests" className="ui-back-link">← Назад к списку тестов</Link>
+        </div>
+
+        <div className="ui-card ui-card--padded" style={{ marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div>
+              <h1 className="ui-page__title" style={{ fontSize: 32 }}>{result.title}</h1>
+              <p className="ui-page__subtitle" style={{ marginTop: 10 }}>
+                Результат: {result.correct_answers} из {result.question_count} ({result.percent.toFixed(2)}%)
+              </p>
+              <p className="document-list-item__meta" style={{ marginTop: 8 }}>
+                Попытка №{result.attempt_no}
+              </p>
+            </div>
+            <div className="ui-course-card__actions">
+              <Button variant="primary" onClick={() => void handleStartAttempt()} disabled={isStarting}>
+                {isStarting ? 'Подготовка…' : 'Пройти тест заново'}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="ui-list">
+          {result.questions.map((question) => (
+            <article key={question.id} className="ui-section">
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div>
+                  <h2 className="ui-topic-title" style={{ marginTop: 0 }}>Вопрос {question.order_index}</h2>
+                  <p style={{ margin: '0 0 14px', color: 'var(--ui-text)', fontSize: 16, lineHeight: 1.6 }}>
+                    {question.question_text}
+                  </p>
+                </div>
+                
+              </div>
+
+              <div className="ui-list">
+                {question.options.map((option, index) => {
+                  const isSelectedCorrect = option.is_selected && option.is_correct;
+                  const isSelectedWrong = option.is_selected && !option.is_correct;
+
+                  const borderColor = isSelectedCorrect
+                    ? 'var(--ui-success-border)'
+                    : isSelectedWrong
+                      ? '#efc2c0'
+                      : 'var(--ui-border-soft)';
+
+                  const background = isSelectedCorrect
+                    ? 'var(--ui-success-bg)'
+                    : isSelectedWrong
+                      ? '#fff2f1'
+                      : '#fffdfa';
+
+                  const color = isSelectedCorrect
+                    ? 'var(--ui-success-text)'
+                    : isSelectedWrong
+                      ? '#b64942'
+                      : 'var(--ui-text)';
+
+                  return (
+                    <div
+                      key={option.id}
+                      className="ui-card ui-card--padded"
+                      style={{ borderColor, background, padding: '14px 18px' }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center' }}>
+                        <span style={{ color, lineHeight: 1.5 }}>
+                          {String.fromCharCode(65 + index)}. {option.text}
+                        </span>
+                        {option.is_selected ? (
+                          <span
+                            style={{
+                              flexShrink: 0,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              padding: '6px 10px',
+                              borderRadius: 999,
+                              border: `1px solid ${isSelectedCorrect ? 'var(--ui-success-border)' : '#efc2c0'}`,
+                              background: isSelectedCorrect ? 'var(--ui-success-bg)' : '#fff2f1',
+                              color: isSelectedCorrect ? 'var(--ui-success-text)' : '#b64942',
+                              fontSize: 13,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {isSelectedCorrect ? 'Ваш ответ — верно' : 'Ваш ответ — неверно'}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (!attempt) {
+    return (
+      <section className="ui-page">
+        {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
+        {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
+        <div style={{ marginBottom: 18 }}>
+          <Link to="/app/tests" className="ui-back-link">← Назад к списку тестов</Link>
+        </div>
+
+        <article className="ui-card ui-card--padded ui-course-card">
+          <div>
+            <div className="ui-course-card__meta">
+              <StatusBadge status={test.status} />
+            </div>
+            <h1 className="ui-course-card__title">{test.title}</h1>
+            <p className="ui-course-card__description">Курс-источник: {test.course_title}</p>
+            <p className="ui-course-card__documents">Вопросов: {test.questions.length}</p>
+          </div>
+
+          <div className="ui-course-card__actions">
+            <Button variant="primary" onClick={() => void handleStartAttempt()} disabled={isStarting} fullWidth>
+              {isStarting ? 'Подготовка…' : 'Начать тест'}
+            </Button>
+          </div>
+        </article>
+      </section>
+    );
+  }
+
+  return (
+    <section className="ui-page">
+      {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
+      {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
+      <div className="ui-card ui-card--padded" style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: '1 1 500px' }}>
+            <h1 className="ui-page__title" style={{ fontSize: 32, marginBottom: 18 }}>{attempt.title}</h1>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {attempt.questions.map((question, index) => {
+                const isAnswered = selectedAnswers[question.id] != null;
+                const isActive = index === currentQuestionIndex;
+                return (
+                  <button
+                    key={question.id}
+                    type="button"
+                    onClick={() => handleGoToQuestion(index)}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 10,
+                      border: `1px solid ${isActive ? '#d6a76e' : isAnswered ? '#9bbc7c' : 'var(--ui-border-soft)'}`,
+                      background: isActive ? '#d6a76e' : isAnswered ? '#f4fbf0' : '#fffdfa',
+                      color: isActive ? '#ffffff' : 'var(--ui-text)',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {index + 1}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="document-list-item__meta">
+              Отвечено: {answeredCount} из {attempt.question_count}
+            </p>
+          </div>
+
+          <div className="ui-course-card__actions">
+            <Button variant="outline" onClick={() => void handleFinishAttempt()} disabled={isFinishing}>
+              {isFinishing ? 'Завершение…' : 'Завершить тест'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {currentQuestion ? (
+        <article className="ui-section" style={{ padding: '28px 30px' }}>
+          <h2 className="ui-topic-title" style={{ marginTop: 0, marginBottom: 12 }}>
+            Вопрос {currentQuestionIndex + 1}
+          </h2>
+          <p style={{ margin: '0 0 20px', color: 'var(--ui-text)', fontSize: 18, lineHeight: 1.6 }}>
+            {currentQuestion.question_text}
+          </p>
+
+          <div
+            style={{
+              display: 'grid',
+              gap: 16,
+              gridTemplateColumns: currentQuestion.options.length > 2 ? 'repeat(2, minmax(0, 1fr))' : '1fr',
+            }}
+          >
+            {currentQuestion.options.map((option, index) => {
+              const selected = selectedAnswers[currentQuestion.id] === option.id;
+              return (
+                <label
+                  key={option.id}
+                  className="ui-card ui-card--padded"
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                    cursor: 'pointer',
+                    borderColor: selected ? '#d6a76e' : 'var(--ui-border-soft)',
+                    background: selected ? '#fff7ef' : '#fffdfa',
+                    padding: '16px 18px',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name={`question-${currentQuestion.id}`}
+                    checked={selected}
+                    onChange={() => handleSelectOption(currentQuestion.id, option.id)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span style={{ color: 'var(--ui-text)', lineHeight: 1.5 }}>
+                    <strong style={{ marginRight: 6 }}>{String.fromCharCode(65 + index)}.</strong>
+                    {option.text}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginTop: 24, flexWrap: 'wrap' }}>
+            <Button
+              variant="outline"
+              onClick={() => handleGoToQuestion(currentQuestionIndex - 1)}
+              disabled={currentQuestionIndex === 0}
+            >
+              Назад
+            </Button>
+
+            {currentQuestionIndex < attempt.questions.length - 1 ? (
+              <Button variant="primary" onClick={() => handleGoToQuestion(currentQuestionIndex + 1)}>
+                Вперёд
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={() => void handleFinishAttempt()} disabled={isFinishing}>
+                {isFinishing ? 'Завершение…' : 'Завершить тест'}
+              </Button>
+            )}
+          </div>
+        </article>
+      ) : null}
+    </section>
+  );
+}
+
 export function TestDetailPage() {
   const { testId } = useParams();
   const navigate = useNavigate();
+  const currentUser = getStoredUser();
+  const learner = isLearnerUser(currentUser);
   const tempIdRef = useRef(-1);
   const [test, setTest] = useState<TestDraftDto | null>(null);
   const [editableTest, setEditableTest] = useState<EditableTest | null>(null);
@@ -143,7 +483,8 @@ export function TestDetailPage() {
         : {
             ...question,
             options: question.options.map((option) => option.id === optionId ? { ...option, text: value } : option),
-          }),
+          },
+      ),
     }));
   }
 
@@ -155,7 +496,8 @@ export function TestDetailPage() {
         : {
             ...question,
             options: question.options.map((option) => ({ ...option, is_correct: option.id === optionId })),
-          }),
+          },
+      ),
     }));
   }
 
@@ -201,7 +543,8 @@ export function TestDetailPage() {
               ...question.options,
               { id: nextTempId(), text: `Вариант ${question.options.length + 1}`, is_correct: false, order_index: question.options.length + 1 },
             ],
-          }),
+          },
+      ),
     }));
   }
 
@@ -310,10 +653,19 @@ export function TestDetailPage() {
     );
   }
 
+  if (learner) {
+    return <LearnerTestView test={testToRender as TestDraftDto} />;
+  }
+
   return (
     <section className="ui-page">
       <div style={{ marginBottom: 18 }}>
-        <button type="button" className="ui-back-link" onClick={() => navigate('/app/tests')} style={{ background: 'transparent', border: 'none', padding: 0 }}>
+        <button
+          type="button"
+          className="ui-back-link"
+          onClick={() => navigate('/app/tests')}
+          style={{ background: 'transparent', border: 'none', padding: 0 }}
+        >
           ← Назад к списку тестов
         </button>
       </div>

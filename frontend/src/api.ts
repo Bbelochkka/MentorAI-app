@@ -40,10 +40,32 @@ function getToken(): string | null {
   return localStorage.getItem('mentorai_token');
 }
 
+export function getStoredUser(): UserDto | null {
+  const raw = localStorage.getItem('mentorai_user');
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as UserDto;
+  } catch {
+    return null;
+  }
+}
+
+export function isLearnerUser(user: UserDto | null): boolean {
+  return user?.role === 'employer';
+}
+
 async function parseError(response: Response): Promise<Error> {
   const error = await response
     .json()
     .catch(() => ({ detail: 'Ошибка запроса' }));
+
+  if (Array.isArray(error.detail)) {
+    const message = error.detail
+      .map((item: { msg?: string }) => item?.msg)
+      .filter(Boolean)
+      .join('; ');
+    return new Error(message || 'Ошибка запроса');
+  }
 
   return new Error(error.detail ?? 'Ошибка запроса');
 }
@@ -354,6 +376,7 @@ export interface TestSummaryDto {
   course_id: number;
   course_title: string;
   question_count: number;
+  best_attempt_percent?: number | null;
 }
 
 export interface TestListResponse {
@@ -438,6 +461,116 @@ export async function updateTestDraft(testId: number, payload: TestDraftUpdatePa
     },
     body: JSON.stringify(payload)
   });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+
+export interface LearnerTestOptionDto {
+  id: number;
+  text: string;
+  order_index: number;
+}
+
+export interface LearnerTestQuestionDto {
+  id: number;
+  question_text: string;
+  order_index: number;
+  options: LearnerTestOptionDto[];
+}
+
+export interface TestAttemptStartDto {
+  attempt_id: number;
+  attempt_no: number;
+  test_id: number;
+  title: string;
+  course_id: number;
+  course_title: string;
+  question_count: number;
+  started_at: string;
+  questions: LearnerTestQuestionDto[];
+}
+
+export interface TestAttemptAnswerPayload {
+  question_id: number;
+  selected_option_id?: number | null;
+}
+
+export interface TestAttemptFinishPayload {
+  answers: TestAttemptAnswerPayload[];
+}
+
+export interface AttemptResultOptionDto {
+  id: number;
+  text: string;
+  order_index: number;
+  is_selected: boolean;
+  is_correct: boolean;
+}
+
+export interface AttemptResultQuestionDto {
+  id: number;
+  question_text: string;
+  order_index: number;
+  selected_option_id?: number | null;
+  is_correct: boolean;
+  options: AttemptResultOptionDto[];
+}
+
+export interface TestAttemptResultDto {
+  attempt_id: number;
+  attempt_no: number;
+  test_id: number;
+  title: string;
+  course_id: number;
+  course_title: string;
+  question_count: number;
+  correct_answers: number;
+  score: number;
+  percent: number;
+  status: string;
+  started_at: string;
+  completed_at?: string | null;
+  questions: AttemptResultQuestionDto[];
+}
+
+export async function startTestAttempt(testId: number): Promise<TestAttemptStartDto> {
+  const response = await authorizedFetch(`${API_URL}/api/tests/${testId}/attempts`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function finishTestAttempt(
+  attemptId: number,
+  payload: TestAttemptFinishPayload
+): Promise<TestAttemptResultDto> {
+  const response = await authorizedFetch(`${API_URL}/api/attempts/${attemptId}/finish`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function getAttemptResult(attemptId: number): Promise<TestAttemptResultDto> {
+  const response = await authorizedFetch(`${API_URL}/api/attempts/${attemptId}/result`);
 
   if (!response.ok) {
     throw await parseError(response);

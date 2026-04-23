@@ -149,6 +149,7 @@ class TestSummaryResponse(BaseModel):
     course_id: int
     course_title: str
     question_count: int
+    best_attempt_percent: float | None = None
 
 
 class TestListResponse(BaseModel):
@@ -176,3 +177,71 @@ class TestDraftUpdateRequest(BaseModel):
 
 class TestStatusUpdateRequest(BaseModel):
     status: Literal['draft', 'published']
+
+
+class LearnerTestOptionResponse(BaseModel):
+    id: int
+    text: str
+    order_index: int
+
+
+class LearnerTestQuestionResponse(BaseModel):
+    id: int
+    question_text: str
+    order_index: int
+    options: list[LearnerTestOptionResponse]
+
+
+class TestAttemptStartResponse(BaseModel):
+    attempt_id: int
+    attempt_no: int
+    test_id: int
+    title: str
+    course_id: int
+    course_title: str
+    question_count: int
+    started_at: datetime
+    questions: list[LearnerTestQuestionResponse]
+
+
+class AttemptAnswerRequest(BaseModel):
+    question_id: int
+    selected_option_id: int | None = None
+
+
+class TestAttemptFinishRequest(BaseModel):
+    answers: list[AttemptAnswerRequest]
+
+
+class AttemptResultOptionResponse(BaseModel):
+    id: int
+    text: str
+    order_index: int
+    is_selected: bool
+    is_correct: bool
+
+
+class AttemptResultQuestionResponse(BaseModel):
+    id: int
+    question_text: str
+    order_index: int
+    selected_option_id: int | None = None
+    is_correct: bool
+    options: list[AttemptResultOptionResponse]
+
+
+class TestAttemptResultResponse(BaseModel):
+    attempt_id: int
+    attempt_no: int
+    test_id: int
+    title: str
+    course_id: int
+    course_title: str
+    question_count: int
+    correct_answers: int
+    score: float
+    percent: float
+    status: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    questions: list[AttemptResultQuestionResponse]

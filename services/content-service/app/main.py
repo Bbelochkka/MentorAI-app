@@ -47,14 +47,39 @@ from .schemas import (
     TestListResponse,
     TestStatusUpdateRequest,
     TestDraftUpdateRequest,
+    LearnerTestOptionResponse,
+    LearnerTestQuestionResponse,
+    TestAttemptStartResponse,
+    AttemptAnswerRequest,
+    TestAttemptFinishRequest,
+    AttemptResultOptionResponse,
+    AttemptResultQuestionResponse,
+    TestAttemptResultResponse,
 )
-from .security import FAKE_USER, create_access_token, get_current_user
+from .security import authenticate_user, create_access_token, get_current_user
 from .test_generation import (
     build_test_draft_from_course,
     parse_desired_question_count,
     validate_generated_test,
 )
 logger = logging.getLogger(__name__)
+
+ADMIN_ROLES = {"manager", "admin"}
+LEARNER_ROLES = {"employer"}
+
+def is_admin_user(user: dict) -> bool:
+    return user.get("role") in ADMIN_ROLES
+
+def is_learner_user(user: dict) -> bool:
+    return user.get("role") in LEARNER_ROLES
+
+def require_admin_user(user: dict) -> None:
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для выполнения действия")
+
+def require_learner_user(user: dict) -> None:
+    if not is_learner_user(user):
+        raise HTTPException(status_code=403, detail="Действие доступно только стажёру")
 
 ALLOWED_FILE_TYPES = {
     ".pdf": "pdf",
@@ -303,19 +328,20 @@ def healthcheck() -> HealthResponse:
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest) -> LoginResponse:
-    if payload.email != FAKE_USER["email"] or payload.password != FAKE_USER["password"]:
+    user_record = authenticate_user(payload.email, payload.password)
+    if not user_record:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный e-mail или пароль",
         )
 
-    access_token = create_access_token(FAKE_USER["email"])
+    access_token = create_access_token(user_record["id"])
     user = UserResponse(
-        id=FAKE_USER["id"],
-        email=FAKE_USER["email"],
-        name=FAKE_USER["name"],
-        role=FAKE_USER["role"],
-        company_id=FAKE_USER["company_id"],
+        id=user_record["id"],
+        email=user_record["email"],
+        name=user_record["name"],
+        role=user_record["role"],
+        company_id=user_record["company_id"],
     )
 
     return LoginResponse(access_token=access_token, user=user)
@@ -337,6 +363,8 @@ async def upload_document(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ) -> DocumentResponse:
+    require_admin_user(current_user)
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Файл не выбран")
 
@@ -397,6 +425,7 @@ async def upload_document(
 
 @app.get("/api/documents", response_model=DocumentListResponse)
 def list_documents(current_user: dict = Depends(get_current_user)) -> DocumentListResponse:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -415,6 +444,7 @@ def list_documents(current_user: dict = Depends(get_current_user)) -> DocumentLi
 
 @app.get("/api/documents/{document_id}", response_model=DocumentResponse)
 def get_document(document_id: int, current_user: dict = Depends(get_current_user)) -> DocumentResponse:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -435,6 +465,7 @@ def get_document(document_id: int, current_user: dict = Depends(get_current_user
 
 @app.post("/api/documents/{document_id}/process", response_model=DocumentResponse)
 def process_document(document_id: int, current_user: dict = Depends(get_current_user)) -> DocumentResponse:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -540,16 +571,19 @@ def process_document(document_id: int, current_user: dict = Depends(get_current_
 
 @app.get("/api/courses", response_model=CourseListResponse)
 def list_courses(current_user: dict = Depends(get_current_user)) -> CourseListResponse:
+    published_filter = "AND cv.status = 'published'" if is_learner_user(current_user) else ""
+
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT c.id, c.title, COALESCE(c.description, ''), cv.status
                 FROM courses c
                 JOIN course_versions cv
                   ON cv.course_id = c.id
                  AND cv.version_number = c.current_version_no
                 WHERE c.company_id = %s
+                {published_filter}
                 ORDER BY c.id DESC
                 """,
                 (current_user["company_id"],),
@@ -559,7 +593,7 @@ def list_courses(current_user: dict = Depends(get_current_user)) -> CourseListRe
             course_ids = [row[0] for row in rows]
             doc_titles_by_course: dict[int, list[str]] = {course_id: [] for course_id in course_ids}
 
-            if course_ids:
+            if course_ids and is_admin_user(current_user):
                 cur.execute(
                     """
                     SELECT l.course_id, d.title
@@ -590,7 +624,10 @@ def list_courses(current_user: dict = Depends(get_current_user)) -> CourseListRe
 
 @app.get("/api/courses/{course_id}", response_model=CourseDraftResponse)
 def get_course(course_id: int, current_user: dict = Depends(get_current_user)) -> CourseDraftResponse:
-    return fetch_course_draft_from_db(course_id, current_user["company_id"])
+    draft = fetch_course_draft_from_db(course_id, current_user["company_id"])
+    if is_learner_user(current_user) and draft.status != "published":
+        raise HTTPException(status_code=404, detail="Курс не найден")
+    return draft
 
 @app.put("/api/courses/{course_id}", response_model=CourseDraftResponse)
 def update_course(
@@ -598,6 +635,7 @@ def update_course(
     payload: CourseDraftUpdateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> CourseDraftResponse:
+    require_admin_user(current_user)
     title, description, normalized_modules = _normalize_course_update_payload(payload)
 
     with get_postgres_connection() as conn:
@@ -701,6 +739,7 @@ def update_course_status(
     payload: CourseStatusUpdateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> CourseDraftResponse:
+    require_admin_user(current_user)
     notes_by_status = {
         "draft": "Статус курса переведен в черновик",
         "published": "Курс опубликован",
@@ -752,6 +791,7 @@ def update_course_status(
 
 @app.delete("/api/courses/{course_id}")
 def delete_course(course_id: int, current_user: dict = Depends(get_current_user)) -> dict[str, str]:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -825,6 +865,8 @@ def generate_course_draft(
     payload: CourseGenerateRequest,
     current_user: dict = Depends(get_current_user),
 ) -> CourseDraftResponse:
+    require_admin_user(current_user)
+
     title = payload.title.strip()
     document_ids = payload.document_ids
 
@@ -1044,6 +1086,7 @@ def generate_course_draft(
 
 @app.delete("/api/documents/{document_id}")
 def delete_document(document_id: int, current_user: dict = Depends(get_current_user)) -> dict[str, str]:
+    require_admin_user(current_user)
     file_path: str | None = None
 
     with get_postgres_connection() as conn:
@@ -1286,22 +1329,35 @@ def _validate_test_update_payload(payload: TestDraftUpdateRequest) -> None:
 
 @app.get("/api/tests", response_model=TestListResponse)
 def list_tests(current_user: dict = Depends(get_current_user)) -> TestListResponse:
+    published_filter = "AND tv.status = 'published' AND c.status = 'published'" if is_learner_user(current_user) else ""
+
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT t.id, t.title, tv.status, c.id, c.title, COUNT(q.id)
+                f"""
+                SELECT t.id,
+                       t.title,
+                       tv.status,
+                       c.id,
+                       c.title,
+                       COUNT(DISTINCT q.id),
+                       MAX(ta.percent)
                 FROM tests t
                 JOIN test_versions tv
                   ON tv.test_id = t.id
                  AND tv.version_number = t.current_version_no
                 JOIN courses c ON c.id = t.course_id
                 LEFT JOIN questions q ON q.test_version_id = tv.id
+                LEFT JOIN test_attempts ta
+                  ON ta.test_id = t.id
+                 AND ta.user_id = %s
+                 AND ta.status = 'completed'
                 WHERE t.company_id = %s
+                {published_filter}
                 GROUP BY t.id, t.title, tv.status, c.id, c.title
                 ORDER BY t.updated_at DESC, t.id DESC
                 """,
-                (current_user["company_id"],),
+                (current_user["id"], current_user["company_id"]),
             )
             rows = cur.fetchall()
 
@@ -1313,6 +1369,7 @@ def list_tests(current_user: dict = Depends(get_current_user)) -> TestListRespon
             course_id=row[3],
             course_title=row[4],
             question_count=row[5],
+            best_attempt_percent=float(row[6]) if row[6] is not None else None,
         )
         for row in rows
     ]
@@ -1321,11 +1378,383 @@ def list_tests(current_user: dict = Depends(get_current_user)) -> TestListRespon
 
 @app.get("/api/tests/{test_id}", response_model=TestDraftResponse)
 def get_test(test_id: int, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
-    return fetch_test_draft_from_db(test_id, current_user["company_id"])
+    draft = fetch_test_draft_from_db(test_id, current_user["company_id"])
+    if is_learner_user(current_user):
+        if draft.status != "published":
+            raise HTTPException(status_code=404, detail="Тест не найден")
+        course = fetch_course_draft_from_db(draft.course_id, current_user["company_id"])
+        if course.status != "published":
+            raise HTTPException(status_code=404, detail="Тест не найден")
+        for question in draft.questions:
+            for option in question.options:
+                option.is_correct = False
+    return draft
+
+
+
+
+def _fetch_published_test_context_for_attempt(test_id: int, company_id: int) -> tuple[int, int, str, int, str]:
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.id, tv.id, t.title, c.id, c.title
+                FROM tests t
+                JOIN test_versions tv
+                  ON tv.test_id = t.id
+                 AND tv.version_number = t.current_version_no
+                JOIN courses c ON c.id = t.course_id
+                JOIN course_versions cv
+                  ON cv.course_id = c.id
+                 AND cv.version_number = c.current_version_no
+                WHERE t.id = %s
+                  AND t.company_id = %s
+                  AND t.status = 'published'
+                  AND tv.status = 'published'
+                  AND c.status = 'published'
+                  AND cv.status = 'published'
+                LIMIT 1
+                """,
+                (test_id, company_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Опубликованный тест не найден")
+
+    return row[0], row[1], row[2], row[3], row[4]
+
+
+def _fetch_attempt_questions_for_version(test_version_id: int) -> list[dict]:
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT q.id, q.question_text, q.sort_order, q.weight
+                FROM questions q
+                WHERE q.test_version_id = %s
+                ORDER BY q.sort_order
+                """,
+                (test_version_id,),
+            )
+            question_rows = cur.fetchall()
+
+            questions: list[dict] = []
+            for question_id, question_text, order_index, weight in question_rows:
+                cur.execute(
+                    """
+                    SELECT id, option_text, is_correct, sort_order
+                    FROM question_options
+                    WHERE question_id = %s
+                    ORDER BY sort_order
+                    """,
+                    (question_id,),
+                )
+                option_rows = cur.fetchall()
+                questions.append(
+                    {
+                        "id": question_id,
+                        "question_text": question_text,
+                        "order_index": order_index,
+                        "weight": float(weight),
+                        "options": [
+                            {
+                                "id": option_id,
+                                "text": option_text,
+                                "is_correct": is_correct,
+                                "order_index": option_order,
+                            }
+                            for option_id, option_text, is_correct, option_order in option_rows
+                        ],
+                    }
+                )
+    return questions
+
+
+def _build_attempt_start_response(*, attempt_id: int, attempt_no: int, test_id: int, version_id: int, title: str, course_id: int, course_title: str):
+    questions_data = _fetch_attempt_questions_for_version(version_id)
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT started_at FROM test_attempts WHERE id = %s", (attempt_id,))
+            started_at = cur.fetchone()[0]
+
+    return TestAttemptStartResponse(
+        attempt_id=attempt_id,
+        attempt_no=attempt_no,
+        test_id=test_id,
+        title=title,
+        course_id=course_id,
+        course_title=course_title,
+        question_count=len(questions_data),
+        started_at=started_at,
+        questions=[
+            LearnerTestQuestionResponse(
+                id=question["id"],
+                question_text=question["question_text"],
+                order_index=question["order_index"],
+                options=[
+                    LearnerTestOptionResponse(
+                        id=option["id"],
+                        text=option["text"],
+                        order_index=option["order_index"],
+                    )
+                    for option in question["options"]
+                ],
+            )
+            for question in questions_data
+        ],
+    )
+
+
+def _fetch_attempt_result_from_db(attempt_id: int, user_id: int, company_id: int) -> TestAttemptResultResponse:
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id,
+                       a.attempt_no,
+                       a.started_at,
+                       a.completed_at,
+                       a.score,
+                       a.percent,
+                       a.status,
+                       t.id,
+                       t.title,
+                       c.id,
+                       c.title,
+                       tv.id
+                FROM test_attempts a
+                JOIN tests t ON t.id = a.test_id
+                JOIN test_versions tv ON tv.id = a.test_version_id
+                JOIN courses c ON c.id = t.course_id
+                WHERE a.id = %s
+                  AND a.user_id = %s
+                  AND t.company_id = %s
+                LIMIT 1
+                """,
+                (attempt_id, user_id, company_id),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Попытка не найдена")
+
+            db_attempt_id, attempt_no, started_at, completed_at, score, percent, status_value, test_id, title, course_id, course_title, version_id = row
+            questions_data = _fetch_attempt_questions_for_version(version_id)
+
+            correct_answers = 0
+            result_questions: list[AttemptResultQuestionResponse] = []
+
+            for question in questions_data:
+                cur.execute(
+                    """
+                    SELECT selected_option_id, COALESCE(is_correct, FALSE)
+                    FROM question_responses
+                    WHERE attempt_id = %s AND question_id = %s
+                    LIMIT 1
+                    """,
+                    (attempt_id, question["id"]),
+                )
+                response_row = cur.fetchone()
+                selected_option_id = response_row[0] if response_row else None
+                is_correct = bool(response_row[1]) if response_row else False
+                if is_correct:
+                    correct_answers += 1
+
+                result_questions.append(
+                    AttemptResultQuestionResponse(
+                        id=question["id"],
+                        question_text=question["question_text"],
+                        order_index=question["order_index"],
+                        selected_option_id=selected_option_id,
+                        is_correct=is_correct,
+                        options=[
+                            AttemptResultOptionResponse(
+                                id=option["id"],
+                                text=option["text"],
+                                order_index=option["order_index"],
+                                is_selected=(option["id"] == selected_option_id),
+                                is_correct=option["is_correct"],
+                            )
+                            for option in question["options"]
+                        ],
+                    )
+                )
+
+    return TestAttemptResultResponse(
+        attempt_id=db_attempt_id,
+        attempt_no=attempt_no,
+        test_id=test_id,
+        title=title,
+        course_id=course_id,
+        course_title=course_title,
+        question_count=len(result_questions),
+        correct_answers=correct_answers,
+        score=float(score),
+        percent=float(percent),
+        status=status_value,
+        started_at=started_at,
+        completed_at=completed_at,
+        questions=result_questions,
+    )
+
+
+@app.post("/api/tests/{test_id}/attempts", response_model=TestAttemptStartResponse)
+def start_test_attempt(test_id: int, current_user: dict = Depends(get_current_user)) -> TestAttemptStartResponse:
+    require_learner_user(current_user)
+    test_id, version_id, title, course_id, course_title = _fetch_published_test_context_for_attempt(
+        test_id,
+        current_user["company_id"],
+    )
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE test_attempts
+                SET status = 'abandoned', completed_at = NOW()
+                WHERE user_id = %s AND test_id = %s AND status = 'started'
+                """,
+                (current_user["id"], test_id),
+            )
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(attempt_no), 0) + 1
+                FROM test_attempts
+                WHERE user_id = %s AND test_id = %s
+                """,
+                (current_user["id"], test_id),
+            )
+            attempt_no = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO test_attempts (user_id, test_id, test_version_id, attempt_no, status)
+                VALUES (%s, %s, %s, %s, 'started')
+                RETURNING id
+                """,
+                (current_user["id"], test_id, version_id, attempt_no),
+            )
+            attempt_id = cur.fetchone()[0]
+        conn.commit()
+
+    return _build_attempt_start_response(
+        attempt_id=attempt_id,
+        attempt_no=attempt_no,
+        test_id=test_id,
+        version_id=version_id,
+        title=title,
+        course_id=course_id,
+        course_title=course_title,
+    )
+
+
+@app.post("/api/attempts/{attempt_id}/finish", response_model=TestAttemptResultResponse)
+def finish_test_attempt(
+    attempt_id: int,
+    payload: TestAttemptFinishRequest,
+    current_user: dict = Depends(get_current_user),
+) -> TestAttemptResultResponse:
+    require_learner_user(current_user)
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id, a.test_id, a.test_version_id, a.status, t.company_id
+                FROM test_attempts a
+                JOIN tests t ON t.id = a.test_id
+                WHERE a.id = %s AND a.user_id = %s
+                LIMIT 1
+                """,
+                (attempt_id, current_user["id"]),
+            )
+            attempt_row = cur.fetchone()
+
+            if not attempt_row:
+                raise HTTPException(status_code=404, detail="Попытка не найдена")
+
+            _, test_id, test_version_id, attempt_status, company_id = attempt_row
+            if company_id != current_user["company_id"]:
+                raise HTTPException(status_code=404, detail="Попытка не найдена")
+            if attempt_status != "started":
+                raise HTTPException(status_code=400, detail="Попытка уже завершена")
+
+            questions_data = _fetch_attempt_questions_for_version(test_version_id)
+            if not questions_data:
+                raise HTTPException(status_code=400, detail="В тесте нет вопросов")
+
+            answers_by_question_id = {answer.question_id: answer.selected_option_id for answer in payload.answers}
+            valid_question_ids = {question["id"] for question in questions_data}
+
+            invalid_question_ids = [question_id for question_id in answers_by_question_id if question_id not in valid_question_ids]
+            if invalid_question_ids:
+                raise HTTPException(status_code=400, detail="Обнаружены ответы на вопросы, которых нет в тесте")
+
+            total_weight = 0.0
+            earned_score = 0.0
+            correct_answers = 0
+
+            cur.execute("DELETE FROM question_responses WHERE attempt_id = %s", (attempt_id,))
+
+            for question in questions_data:
+                question_id = question["id"]
+                selected_option_id = answers_by_question_id.get(question_id)
+                valid_option_ids = {option["id"] for option in question["options"]}
+                if selected_option_id is not None and selected_option_id not in valid_option_ids:
+                    raise HTTPException(status_code=400, detail="Обнаружен вариант ответа, не принадлежащий вопросу")
+
+                correct_option = next((option for option in question["options"] if option["is_correct"]), None)
+                is_correct = selected_option_id is not None and correct_option is not None and selected_option_id == correct_option["id"]
+                question_weight = float(question["weight"])
+                total_weight += question_weight
+                current_score = question_weight if is_correct else 0.0
+                earned_score += current_score
+                if is_correct:
+                    correct_answers += 1
+
+                cur.execute(
+                    """
+                    INSERT INTO question_responses (
+                        attempt_id,
+                        question_id,
+                        selected_option_id,
+                        answer_text,
+                        is_correct,
+                        earned_score
+                    )
+                    VALUES (%s, %s, %s, NULL, %s, %s)
+                    """,
+                    (attempt_id, question_id, selected_option_id, is_correct, current_score),
+                )
+
+            percent = round((earned_score / total_weight) * 100, 2) if total_weight else 0.0
+
+            cur.execute(
+                """
+                UPDATE test_attempts
+                SET completed_at = NOW(),
+                    score = %s,
+                    percent = %s,
+                    status = 'completed'
+                WHERE id = %s
+                """,
+                (earned_score, percent, attempt_id),
+            )
+        conn.commit()
+
+    return _fetch_attempt_result_from_db(attempt_id, current_user["id"], current_user["company_id"])
+
+
+@app.get("/api/attempts/{attempt_id}/result", response_model=TestAttemptResultResponse)
+def get_attempt_result(attempt_id: int, current_user: dict = Depends(get_current_user)) -> TestAttemptResultResponse:
+    require_learner_user(current_user)
+    return _fetch_attempt_result_from_db(attempt_id, current_user["id"], current_user["company_id"])
 
 
 @app.put("/api/tests/{test_id}", response_model=TestDraftResponse)
 def update_test_draft(test_id: int, payload: TestDraftUpdateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+    require_admin_user(current_user)
     _validate_test_update_payload(payload)
     title = _normalize_test_title(payload.title)
 
@@ -1379,6 +1808,7 @@ def update_test_draft(test_id: int, payload: TestDraftUpdateRequest, current_use
 
 @app.post("/api/tests/{test_id}/status", response_model=TestDraftResponse)
 def update_test_status(test_id: int, payload: TestStatusUpdateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1407,6 +1837,7 @@ def update_test_status(test_id: int, payload: TestStatusUpdateRequest, current_u
 
 @app.delete("/api/tests/{test_id}")
 def delete_test(test_id: int, current_user: dict = Depends(get_current_user)) -> dict[str, str]:
+    require_admin_user(current_user)
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM tests WHERE id = %s AND company_id = %s", (test_id, current_user["company_id"]))
@@ -1418,6 +1849,7 @@ def delete_test(test_id: int, current_user: dict = Depends(get_current_user)) ->
 
 @app.post("/api/tests/generate-draft", response_model=TestDraftResponse)
 def generate_test_draft(payload: TestGenerateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+    require_admin_user(current_user)
     title = _normalize_test_title(payload.title)
     question_count = parse_desired_question_count(payload.desired_question_count)
 
