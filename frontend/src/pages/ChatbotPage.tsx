@@ -4,6 +4,7 @@ import '../styles/chatbot.css';
 type ChatbotSourceDto = {
   document_id: number;
   document_title: string;
+  course_titles?: string[];
   chunk_id?: number | null;
   relevance_score?: number | null;
 };
@@ -89,7 +90,14 @@ async function sendChatbotMessage(sessionId: number, query: string): Promise<Cha
 }
 
 function buildSources(turn: ChatbotTurnDto): string[] {
-  return Array.from(new Set(turn.sources.map((source) => source.document_title))).filter(Boolean);
+  const titles = turn.sources.flatMap((source) => {
+    if (source.course_titles && source.course_titles.length > 0) {
+      return source.course_titles;
+    }
+    return source.document_title ? [source.document_title] : [];
+  });
+
+  return Array.from(new Set(titles.map((title) => title.trim()).filter(Boolean)));
 }
 
 function formatStamp(value: string) {
@@ -216,7 +224,7 @@ export function ChatbotPage() {
         <div className="chatgpt-topbar">
           <div>
             <h1 className="chatgpt-title">Чат-бот</h1>
-            <p className="chatgpt-subtitle">Задавай вопросы по уже загруженным и обработанным документам.</p>
+            <p className="chatgpt-subtitle">Задавай вопросы по материалам уже созданных курсов.</p>
           </div>
           <button type="button" className="chatgpt-reset" onClick={() => void handleNewChat()}>
             Новый чат
@@ -258,7 +266,7 @@ export function ChatbotPage() {
 
                       {sourceTitles.length > 0 ? (
                         <div className="chatgpt-sources">
-                          <span className="chatgpt-sources__label">Источник:</span>
+                          <span className="chatgpt-sources__label">{sourceTitles.length === 1 ? 'Курс:' : 'Курсы:'}</span>
                           <div className="chatgpt-source-list">
                             {sourceTitles.map((title) => (
                               <span key={title} className="chatgpt-source-pill">{title}</span>
@@ -277,7 +285,7 @@ export function ChatbotPage() {
                 <div className="chatgpt-turn__assistant">
                   <div className="chatgpt-avatar">AI</div>
                   <div className="chatgpt-assistant-card chatgpt-assistant-card--loading">
-                    Ищу ответ по загруженным документам…
+                    Ищу ответ по материалам курса…
                   </div>
                 </div>
               </div>
@@ -291,7 +299,7 @@ export function ChatbotPage() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Напиши вопрос по загруженным документам"
+                placeholder="Напиши вопрос по материалам курса"
                 rows={1}
               />
               <button type="submit" className="chatgpt-composer__send" disabled={isSending || !query.trim()}>

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .infrastructure import get_postgres_connection
@@ -22,7 +23,10 @@ class ChatbotAskRequest(BaseModel):
 
 class ChatbotSourceResponse(BaseModel):
     document_id: int
+    # Оставлено для совместимости со старым фронтом. Теперь здесь лежит НЕ документ,
+    # а название курса или список курсов, где используется найденный документ.
     document_title: str
+    course_titles: list[str] = Field(default_factory=list)
     chunk_id: int | None = None
     relevance_score: float | None = None
 
@@ -52,16 +56,44 @@ _STOP_WORDS = {
     "и", "в", "во", "на", "по", "для", "о", "об", "от", "до", "не", "но", "что", "кто",
     "как", "где", "какой", "какая", "какие", "какое", "это", "этот", "эта", "эти", "есть",
     "ли", "а", "я", "ты", "мы", "вы", "они", "он", "она", "оно", "про", "из", "или",
-    "с", "со", "у", "же", "бы", "быть", "его", "ее", "их", "мой", "моя", "мои",
+    "с", "со", "у", "же", "бы", "быть", "его", "ее", "их", "мой", "моя", "мои", "мне",
+    "меня", "тебя", "себя", "там", "тут", "здесь", "тот", "той", "тем", "при", "под",
+    "над", "за", "без", "да", "нет", "ну", "же", "бы", "были", "был", "была", "будет",
+    "можно", "нужно", "надо", "пожалуйста", "расскажи", "скажи", "объясни",
 }
 
 _BAD_PHRASES = (
     "по документу можно выделить несколько важных моментов",
     "по загруженным документам можно выделить",
+    "по предоставленному документу",
+    "по данному документу",
+    "в документе говорится",
+    "контекст из документа",
     "сравнение черных и белых дыр в виде таблицы",
     "оглавление",
     "текст:",
     "источник:",
+    "фрагмент:",
+)
+
+_GIBBERISH_MESSAGE = (
+    "Ошибка: я не смог понять вопрос. Похоже, что введён случайный набор символов. "
+    "Попробуй сформулировать вопрос обычными словами, например: «какие есть тарифы?», "
+    "«кто целевой клиент?» или «как обработать возражение клиента?»."
+)
+
+_NOT_FOUND_MESSAGE = (
+    "Я не нашёл точного ответа на этот вопрос в материалах курса. "
+    "Попробуй уточнить формулировку или спросить про конкретный продукт, тариф, этап продажи, правило CRM или действие менеджера."
+)
+
+_RU_VOWELS = "аеёиоуыэюя"
+_EN_VOWELS = "aeiouy"
+_RU_CONSONANTS = "бвгджзйклмнпрстфхцчшщ"
+_EN_CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+_RANDOM_RU_SEQUENCES = (
+    "зщ", "щз", "щв", "щф", "щй", "щц", "щк", "щп", "щг", "щд", "щж", "щч",
+    "ъь", "ьы", "ыь", "ыъ", "эъ", "ъэ", "йъ", "ъй",
 )
 
 
@@ -70,7 +102,8 @@ def _normalize_token(token: str) -> str:
     for suffix in (
         "иями", "ями", "ами", "ого", "ему", "ому", "ыми", "ими", "его", "ее", "ие", "ые",
         "ая", "яя", "ой", "ий", "ый", "ое", "ам", "ям", "ах", "ях", "ом", "ем",
-        "ов", "ев", "ей", "ия", "ья", "ию", "ью", "а", "я", "ы", "и", "у", "ю", "о", "е", "ь",
+        "ов", "ев", "ей", "ия", "ья", "ию", "ью", "ать", "ять", "ить", "еть",
+        "а", "я", "ы", "и", "у", "ю", "о", "е", "ь",
     ):
         if len(token) > len(suffix) + 2 and token.endswith(suffix):
             return token[: -len(suffix)]
@@ -81,7 +114,8 @@ def _tokenize(text: str) -> list[str]:
     tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9\-]+", text.lower())
     result: list[str] = []
     for token in tokens:
-        if token in _STOP_WORDS:
+        token = token.strip("-")
+        if not token or token in _STOP_WORDS:
             continue
         normalized = _normalize_token(token)
         if len(normalized) >= 2 and normalized not in _STOP_WORDS:
@@ -89,41 +123,130 @@ def _tokenize(text: str) -> list[str]:
     return result
 
 
-def _looks_like_gibberish(text: str) -> bool:
-    cleaned = text.strip().lower()
-    if len(cleaned) < 3:
-        return True
-    letters = re.findall(r"[а-яa-z]", cleaned, flags=re.IGNORECASE)
-    if len(letters) < 3:
-        return True
-    vowels = re.findall(r"[аеёиоуыэюяaeiouy]", cleaned, flags=re.IGNORECASE)
-    if letters and len(vowels) / len(letters) < 0.12:
-        return True
+def _letters_only(text: str) -> str:
+    return "".join(re.findall(r"[а-яa-zё]", text.lower(), flags=re.IGNORECASE)).replace("ё", "е")
+
+
+def _has_too_many_repeated_chars(text: str) -> bool:
+    return bool(re.search(r"(.)\1\1", text.lower()))
+
+
+def _has_long_consonant_chain(text: str) -> bool:
+    lowered = text.lower().replace("ё", "е")
+    return bool(
+        re.search(rf"[{_RU_CONSONANTS}]{{5,}}", lowered)
+        or re.search(rf"[{_EN_CONSONANTS}]{{5,}}", lowered)
+    )
+
+
+def _looks_like_random_short_token(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", text.strip().lower())
     tokens = _tokenize(cleaned)
-    if not tokens:
+    if len(tokens) != 1:
+        return False
+
+    letters = _letters_only(tokens[0])
+    if len(letters) < 5 or len(letters) > 14:
+        return False
+
+    if _has_too_many_repeated_chars(letters) or _has_long_consonant_chain(letters):
         return True
-    long_tokens = [t for t in tokens if len(t) >= 4]
-    if not long_tokens:
+
+    if any(seq in letters for seq in _RANDOM_RU_SEQUENCES):
         return True
+
+    vowels = re.findall(rf"[{_RU_VOWELS}{_EN_VOWELS}]", letters, flags=re.IGNORECASE)
+    vowel_ratio = len(vowels) / max(len(letters), 1)
+    if vowel_ratio < 0.18 or vowel_ratio > 0.72:
+        return True
+
     return False
 
 
+def _looks_like_gibberish(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", text.strip().lower())
+    if len(cleaned) < 3:
+        return True
+    if re.fullmatch(r"[\W_]+", cleaned, flags=re.UNICODE):
+        return True
+
+    letters = _letters_only(cleaned)
+    if len(letters) < 3:
+        return True
+
+    vowels = re.findall(rf"[{_RU_VOWELS}{_EN_VOWELS}]", letters, flags=re.IGNORECASE)
+    if letters and len(vowels) / len(letters) < 0.12:
+        return True
+
+    tokens = _tokenize(cleaned)
+    if not tokens:
+        return True
+
+    if _looks_like_random_short_token(cleaned):
+        return True
+
+    return False
+
+
+def _extract_query_focus(query: str) -> str:
+    """Возвращает смысловой объект вопроса: например, из 'что такое черная дыра' -> 'черная дыра'."""
+    focus = re.sub(r"\s+", " ", query.strip().lower().replace("ё", "е"))
+    focus = re.sub(
+        r"^(?:пожалуйста\s+)?(?:расскажи|скажи|объясни|опиши|напиши|подскажи)\s+(?:мне\s+)?(?:про|о|об|что такое|что значит)?\s*",
+        "",
+        focus,
+        flags=re.IGNORECASE,
+    )
+    focus = re.sub(r"^(?:что\s+такое|что\s+это|кто\s+такой|кто\s+такая|что\s+значит|дай\s+определение)\s+", "", focus)
+    focus = re.sub(r"[?!.]+$", "", focus).strip(" ,;:-")
+    words = [word for word in re.findall(r"[a-zа-яё0-9\-]+", focus, flags=re.IGNORECASE) if word not in _STOP_WORDS]
+    return " ".join(words[:6]).strip()
+
+
+def _is_definition_question(query: str) -> bool:
+    lowered = query.lower().replace("ё", "е")
+    return bool(re.search(r"\b(что\s+такое|что\s+это|что\s+значит|кто\s+такой|кто\s+такая|дай\s+определение|объясни\s+понятие)\b", lowered))
+
+
 def _score_text(query: str, text: str) -> float:
-    query_clean = query.strip().lower()
-    text_clean = text.lower()
+    query_clean = re.sub(r"\s+", " ", query.strip().lower().replace("ё", "е"))
+    text_clean = re.sub(r"\s+", " ", text.lower().replace("ё", "е"))
     query_tokens = _tokenize(query)
     text_tokens = _tokenize(text)
+    text_token_set = set(text_tokens)
     text_joined = f" {' '.join(text_tokens)} "
+    focus = _extract_query_focus(query)
+    focus_tokens = _tokenize(focus)
+
+    if not query_tokens:
+        return 0.0
 
     score = 0.0
     if query_clean and query_clean in text_clean:
-        score += 40.0
+        score += 45.0
+
+    if focus:
+        focus_clean = re.sub(r"\s+", " ", focus.lower().replace("ё", "е"))
+        if focus_clean and focus_clean in text_clean:
+            score += 65.0
+        if focus_tokens and all(token in text_token_set for token in focus_tokens):
+            score += 35.0
+        if focus_clean and re.search(rf"{re.escape(focus_clean)}\s*(?:—|-|–|:|это|является|представляет собой|называется)", text_clean):
+            score += 55.0
+
+    query_bigrams = list(zip(query_tokens, query_tokens[1:]))
+    for first, second in query_bigrams:
+        if f" {first} {second} " in text_joined:
+            score += 12.0
 
     for token in query_tokens:
-        if f" {token} " in text_joined:
-            score += 7.0
-        elif token in text_joined:
+        if token in text_token_set:
+            score += 9.0
+        elif any(token in text_token or text_token in token for text_token in text_token_set if len(token) >= 4):
             score += 3.0
+
+    coverage = len(set(query_tokens) & text_token_set) / max(len(set(query_tokens)), 1)
+    score += coverage * 20.0
 
     if query_clean:
         for pattern in (rf"{re.escape(query_clean)}\s*[—:-]", rf"{re.escape(query_clean)}\s+это"):
@@ -131,10 +254,14 @@ def _score_text(query: str, text: str) -> float:
                 score += 18.0
                 break
 
-    return score
+    if _looks_like_toc_or_heading_list(text):
+        score -= 120.0
+    elif _has_enough_explanatory_text(text):
+        score += 12.0
 
+    return max(score, 0.0)
 
-def _split_long_text(text: str, chunk_size: int = 1200, overlap: int = 180) -> list[str]:
+def _split_long_text(text: str, chunk_size: int = 1400, overlap: int = 220) -> list[str]:
     compact = re.sub(r"\s+", " ", text).strip()
     if not compact:
         return []
@@ -145,7 +272,9 @@ def _split_long_text(text: str, chunk_size: int = 1200, overlap: int = 180) -> l
     start = 0
     while start < len(compact):
         end = min(len(compact), start + chunk_size)
-        pieces.append(compact[start:end].strip())
+        piece = compact[start:end].strip()
+        if piece:
+            pieces.append(piece)
         if end >= len(compact):
             break
         start = max(0, end - overlap)
@@ -156,7 +285,7 @@ def _split_document_into_passages(raw_text: str) -> list[str]:
     blocks = [block.strip() for block in re.split(r"\n\s*\n+", raw_text) if block.strip()]
     passages: list[str] = []
     for block in blocks:
-        if len(block) <= 1400:
+        if len(block) <= 1600:
             passages.append(block)
         else:
             passages.extend(_split_long_text(block))
@@ -165,73 +294,220 @@ def _split_document_into_passages(raw_text: str) -> list[str]:
     return passages
 
 
+def _non_empty_lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if re.sub(r"\s+", " ", line).strip()]
+
+
+def _is_heading_like_line(line: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", line.strip())
+    if not cleaned:
+        return False
+    lower = cleaned.lower().replace("ё", "е")
+    if len(cleaned) > 120:
+        return False
+    if re.search(r"(?:\bэто\b|\bявляется\b|представляет собой|называется|означает|—|–)", lower):
+        return False
+    if cleaned.endswith(('.', '!', '?')):
+        return False
+    if re.match(r"^(?:\d+(?:\.\d+)*\.?\s+|[-•*]\s+)?[A-ZА-ЯЁ]", cleaned):
+        return True
+    if ":" in cleaned:
+        before, after = cleaned.split(":", 1)
+        # Короткая строка вида "Белые дыры:" — заголовок. Строка с длинным пояснением после двоеточия — полезный текст.
+        if len(before.split()) <= 6 and len(after.strip()) < 45:
+            return True
+    return False
+
+
+def _has_enough_explanatory_text(text: str) -> bool:
+    lines = _non_empty_lines(text)
+    if not lines:
+        return False
+    explanatory = 0
+    for line in lines:
+        lower = line.lower().replace("ё", "е")
+        if len(line) >= 70 and (
+            line.endswith(('.', '!', '?'))
+            or re.search(r"(?:\bэто\b|\bявляется\b|представляет собой|означает|позволяет|используется|нужно|должен|важно)", lower)
+            or "—" in line
+            or "–" in line
+        ):
+            explanatory += 1
+    return explanatory >= 1
+
+
+def _looks_like_toc_or_heading_list(text: str) -> bool:
+    lines = _non_empty_lines(text)
+    if not lines:
+        return True
+
+    compact = " ".join(lines).lower().replace("ё", "е")
+    first_part = " ".join(lines[:4]).lower().replace("ё", "е")
+    if re.search(r"\b(оглавление|содержание)\b", first_part) and len(lines) >= 3:
+        return True
+
+    if len(lines) >= 3:
+        heading_like = sum(1 for line in lines if _is_heading_like_line(line))
+        explanatory = sum(1 for line in lines if _has_enough_explanatory_text(line))
+        if heading_like / len(lines) >= 0.6 and explanatory <= 1:
+            return True
+
+    punctuation_count = len(re.findall(r"[.!?]", compact))
+    if len(lines) >= 4 and punctuation_count <= 1 and not re.search(r"\b(это|является|представляет собой|означает)\b", compact):
+        return True
+
+    return False
+
+
 def _clean_context_text(text: str) -> str:
     text = re.sub(r"\[\[.*?\]\]", "", text)
-    text = re.sub(r"\|\s*---.*", "", text)
     text = re.sub(r"(^|\n)\s*Источник\s*:.*?(?=\n|$)", "\n", text, flags=re.IGNORECASE)
-    lines = []
-    for raw_line in text.splitlines():
+    text = re.sub(r"^\s*\|\s*[-:]+\s*\|\s*$", "", text, flags=re.MULTILINE)
+    lines = _non_empty_lines(text)
+    cleaned_lines: list[str] = []
+
+    for raw_line in lines:
         line = re.sub(r"\s+", " ", raw_line).strip()
-        if not line:
-            continue
-        lower = line.lower()
-        if lower.startswith("оглавление"):
-            continue
-        if line.count("|") >= 2:
+        lower = line.lower().replace("ё", "е")
+        if lower.startswith(("оглавление", "содержание", "текст:", "источник:", "фрагмент:")):
             continue
         if re.fullmatch(r"[-—|\s]+", line):
             continue
-        lines.append(line)
-    cleaned = "\n".join(lines)
+        if line.count("|") >= 3:
+            continue
+        # Убираем одиночные заголовки/пункты оглавления, чтобы они не превращались в ответ.
+        if _is_heading_like_line(line) and len(line) <= 100:
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
-
 def _sentences(text: str) -> list[str]:
-    compact = re.sub(r"\s+", " ", text).strip()
-    if not compact:
+    prepared = re.sub(r"\s+", " ", text.replace("\n", ". ")).strip()
+    if not prepared:
         return []
-    return [part.strip() for part in re.split(r"(?<=[\.!?])\s+", compact) if part.strip()]
+    raw_parts = re.split(r"(?<=[\.!?])\s+", prepared)
+    result: list[str] = []
+    for part in raw_parts:
+        sentence = part.strip(" .;:-")
+        if not sentence:
+            continue
+        if _is_heading_like_line(sentence):
+            continue
+        if _looks_like_toc_or_heading_list(sentence):
+            continue
+        result.append(sentence)
+    return result
+
+
+def _sentence_matches_focus(sentence: str, focus: str) -> bool:
+    if not focus:
+        return True
+    sentence_tokens = set(_tokenize(sentence))
+    focus_tokens = _tokenize(focus)
+    if not focus_tokens:
+        return True
+    return all(token in sentence_tokens or any(token in st or st in token for st in sentence_tokens if len(token) >= 4) for token in focus_tokens)
+
+
+def _build_definition_answer(question: str, context_sections: list[dict[str, Any]]) -> str:
+    focus = _extract_query_focus(question)
+    candidates: list[tuple[float, str]] = []
+
+    for section in context_sections:
+        cleaned = _clean_context_text(section["text"])
+        for sentence in _sentences(cleaned):
+            lower = sentence.lower().replace("ё", "е")
+            if not _sentence_matches_focus(sentence, focus):
+                continue
+            score = _score_text(question, sentence)
+            if re.search(r"(?:\bэто\b|\bявляется\b|представляет собой|означает|называется|—|–)", lower):
+                score += 40.0
+            if len(sentence) < 35:
+                score -= 20.0
+            if score > 0:
+                candidates.append((score, sentence))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if not candidates:
+        return ""
+
+    main = candidates[0][1].strip()
+    if not main.endswith(('.', '!', '?')):
+        main += "."
+
+    # Добавляем максимум одно поясняющее предложение, если оно действительно про тот же объект.
+    extra = ""
+    for _, sentence in candidates[1:]:
+        if sentence == candidates[0][1]:
+            continue
+        if _sentence_matches_focus(sentence, focus) and 45 <= len(sentence) <= 240:
+            extra = sentence.strip()
+            if not extra.endswith(('.', '!', '?')):
+                extra += "."
+            break
+
+    if extra:
+        return f"{main}\n\n{extra}"
+    return main
 
 
 def _extractive_answer(question: str, context_sections: list[dict[str, Any]]) -> str:
+    if _is_definition_question(question):
+        definition = _build_definition_answer(question, context_sections)
+        if definition:
+            return definition
+
+    focus = _extract_query_focus(question)
     ranked_sentences: list[tuple[float, str]] = []
     for section in context_sections:
         for sentence in _sentences(_clean_context_text(section["text"])):
+            if not _sentence_matches_focus(sentence, focus) and _is_definition_question(question):
+                continue
             score = _score_text(question, sentence)
             if score > 0 and len(sentence) >= 45:
                 ranked_sentences.append((score, sentence))
 
     ranked_sentences.sort(key=lambda item: item[0], reverse=True)
     unique_sentences: list[str] = []
+    seen: set[str] = set()
     for _, sentence in ranked_sentences:
-        if sentence not in unique_sentences:
-            unique_sentences.append(sentence)
-        if len(unique_sentences) >= 5:
+        if _looks_like_toc_or_heading_list(sentence):
+            continue
+        fingerprint = re.sub(r"\W+", "", sentence.lower())[:180]
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        if not sentence.endswith(('.', '!', '?')):
+            sentence += "."
+        unique_sentences.append(sentence)
+        if len(unique_sentences) >= 3:
             break
 
     if not unique_sentences:
-        return "Я не смог найти в документе достаточно информации, чтобы дать аккуратный ответ на этот вопрос."
+        return _NOT_FOUND_MESSAGE
 
-    if len(unique_sentences) <= 2:
-        return " ".join(unique_sentences)
-
-    split_point = min(2, len(unique_sentences) - 1)
-    return " ".join(unique_sentences[:split_point]) + "\n\n" + " ".join(unique_sentences[split_point:])
-
+    return "\n\n".join(unique_sentences)
 
 def _cleanup_answer_text(text: str) -> str:
+    if not text:
+        return ""
+
+    text = text.replace("```", "")
+    text = re.sub(r"\[/?INST\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+
     lines: list[str] = []
     for raw_line in text.splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
         lower = line.lower()
-        if lower.startswith("источник"):
+        if lower.startswith(("источник", "документ:", "файл:", "контекст:")):
             continue
         if any(phrase in lower for phrase in _BAD_PHRASES):
-            continue
-        if line.count("|") >= 2:
             continue
         if re.fullmatch(r"[-—|\s]+", line):
             continue
@@ -245,21 +521,34 @@ def _cleanup_answer_text(text: str) -> str:
 
 def _answer_is_bad(question: str, answer_text: str) -> bool:
     cleaned = _cleanup_answer_text(answer_text)
-    lowered = cleaned.lower()
-    if not cleaned or len(cleaned) < 120:
+    lowered = cleaned.lower().replace("ё", "е")
+    if not cleaned or len(cleaned) < 45:
         return True
     if any(phrase in lowered for phrase in _BAD_PHRASES):
         return True
-    if "|" in cleaned or "---" in cleaned:
+    if "```" in cleaned or "<table" in lowered:
         return True
-    question_tokens = [t for t in _tokenize(question) if len(t) >= 4]
-    if question_tokens and not any(t in _tokenize(cleaned) for t in question_tokens):
+    if cleaned.count("|") >= 4 or "---" in cleaned:
         return True
-    short_lines = [line for line in cleaned.splitlines() if line.strip() and len(line.strip()) < 35]
-    if len(short_lines) >= 3:
+    if cleaned.lower().startswith(("вот ответ", "ответ:", "конечно", "фрагмент")):
         return True
-    return False
+    if _looks_like_toc_or_heading_list(cleaned):
+        return True
 
+    # Плохой признак: длинная строка почти без пунктуации, похожая на склеенные заголовки.
+    punctuation_count = len(re.findall(r"[.!?]", cleaned))
+    if len(cleaned) > 120 and punctuation_count == 0:
+        return True
+
+    # Для вопроса 'что такое ...' ответ должен хотя бы объяснять объект, а не пересказывать соседние темы.
+    if _is_definition_question(question):
+        focus = _extract_query_focus(question)
+        if focus and not _sentence_matches_focus(cleaned, focus):
+            return True
+        if not re.search(r"(?:\bэто\b|\bявляется\b|представляет собой|означает|называется|—|–)", lowered):
+            return True
+
+    return False
 
 def _get_gigachat_token() -> str:
     headers = {
@@ -285,7 +574,7 @@ def _get_gigachat_token() -> str:
     return token
 
 
-def _call_llm(prompt: str, *, system_prompt: str) -> str:
+def _call_llm(prompt: str, *, system_prompt: str, max_tokens: int = 900) -> str:
     provider = settings.llm_provider.lower()
 
     if provider == "ollama":
@@ -297,7 +586,12 @@ def _call_llm(prompt: str, *, system_prompt: str) -> str:
                     "model": settings.llm_model,
                     "prompt": f"{system_prompt}\n\n{prompt}",
                     "stream": False,
-                    "options": {"temperature": 0.15, "num_predict": 1000},
+                    "options": {
+                        "temperature": 0.05,
+                        "top_p": 0.8,
+                        "repeat_penalty": 1.15,
+                        "num_predict": max_tokens,
+                    },
                 },
             )
         if response.status_code >= 400:
@@ -320,7 +614,9 @@ def _call_llm(prompt: str, *, system_prompt: str) -> str:
                 },
                 json={
                     "model": settings.gigachat_model,
-                    "temperature": 0.15,
+                    "temperature": 0.05,
+                    "top_p": 0.8,
+                    "max_tokens": max_tokens,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
@@ -338,77 +634,191 @@ def _call_llm(prompt: str, *, system_prompt: str) -> str:
     raise HTTPException(status_code=500, detail=f"Неизвестный LLM_PROVIDER: {settings.llm_provider}")
 
 
+def _render_context(context_sections: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for idx, section in enumerate(context_sections, start=1):
+        course_hint = section.get("course_hint") or "Материалы курса"
+        text = _clean_context_text(section["text"])
+        if not text:
+            continue
+        parts.append(f"[Фрагмент {idx}. {course_hint}]\n{text}")
+    return "\n\n".join(parts)
+
+
 def _generate_answer_with_llm(question: str, context_sections: list[dict[str, Any]]) -> str:
-    rendered_context = "\n\n".join(
-        f"[Фрагмент {idx}]\n{_clean_context_text(section['text'])}"
-        for idx, section in enumerate(context_sections, start=1)
+    rendered_context = _render_context(context_sections)
+    focus = _extract_query_focus(question)
+    answer_shape = (
+        "Начни с прямого определения в одном предложении, затем дай короткое пояснение. "
+        if _is_definition_question(question)
+        else "Сначала дай прямой ответ на вопрос, затем кратко поясни детали. "
     )
 
     system_prompt = (
-        "Ты корпоративный ИИ-ассистент MentorAI. "
-        "Отвечай только на основе переданного контекста из документов. "
-        "Пиши красивым, естественным русским языком, без заголовков, без таблиц, без списков, без капса, "
-        "без названия файла в начале ответа, без строки 'Источник'. "
-        "Ответ должен состоять из 2-4 связных абзацев обычного текста. "
-        "Не переписывай оглавление, не копируй сырой текст кусками. "
-        "Если в документах нет точного ответа, честно скажи об этом в 1-2 предложениях."
+        "Ты ИИ-ассистент MentorAI для обучения менеджеров. "
+        "Отвечай строго на вопрос пользователя и только по переданным материалам курса. "
+        "Не используй внешние знания и не придумывай факты, цифры, тарифы, этапы, роли или условия. "
+        "Не называй документы, файлы и фрагменты. Не пиши слово 'источник'. "
+        "Не пересказывай оглавление, названия разделов и соседние темы. "
+        "Если точного ответа нет в материалах курса, прямо скажи, что точной информации в материалах нет. "
+        "Стиль: естественный, цельный текст, без канцелярита и без набора тезисов. "
+        + answer_shape +
+        "Обычно пиши 1-3 коротких абзаца. Список используй только если пользователь явно просит список."
     )
 
     prompt = f"""
 Вопрос пользователя:
 {question}
 
-Контекст из документа:
+Главный объект вопроса:
+{focus or 'не выделен'}
+
+Материалы курса, которые можно использовать для ответа:
 {rendered_context}
 
-Сформулируй ответ на русском языке в 2-4 абзацах. Объясни по сути и без лишнего мусора.
+Сформулируй финальный ответ. Важно:
+1. Ответь именно на вопрос пользователя, а не на соседние темы из материалов.
+2. Не делай перечень заголовков и не пересказывай содержание курса.
+3. Не упоминай документы, файлы, источники и фрагменты.
+4. Не копируй большой кусок текста дословно: объясни человеческим языком.
+5. Если данных недостаточно, так и напиши.
 """.strip()
 
-    answer = _call_llm(prompt, system_prompt=system_prompt)
+    answer = _call_llm(prompt, system_prompt=system_prompt, max_tokens=750)
     answer = _cleanup_answer_text(answer)
 
     if _answer_is_bad(question, answer):
         rewrite_prompt = f"""
-Ниже приведён неудачный черновой ответ. Перепиши его как аккуратный, понятный ответ пользователю.
+Черновик ответа получился некачественным. Перепиши его в цельный ответ обычным текстом.
 
 Вопрос:
 {question}
 
-Контекст:
+Главный объект вопроса:
+{focus or 'не выделен'}
+
+Материалы курса:
 {rendered_context}
 
 Черновик:
 {answer}
 
-Требования:
-- только обычный текст по абзацам;
-- без таблиц, списков, заголовков и капса;
-- без строки 'Источник';
-- не начинай с названия документа.
+Требования к финальному ответу:
+- ответь именно на вопрос;
+- не перечисляй заголовки и соседние темы;
+- без слов 'документ', 'файл', 'источник', 'фрагмент';
+- без таблиц и служебных заголовков;
+- 1-3 коротких абзаца;
+- если точного ответа нет, честно скажи, что информации в материалах курса недостаточно.
 """.strip()
-        answer = _call_llm(rewrite_prompt, system_prompt=system_prompt)
+        answer = _call_llm(rewrite_prompt, system_prompt=system_prompt, max_tokens=650)
         answer = _cleanup_answer_text(answer)
 
     return answer
-
 
 def _load_processed_documents(company_id: int) -> list[dict[str, Any]]:
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, title, raw_text
-                FROM documents
-                WHERE company_id = %s
-                  AND status = 'processed'
-                  AND COALESCE(raw_text, '') <> ''
-                ORDER BY created_at DESC
+                SELECT
+                    d.id,
+                    d.title,
+                    d.raw_text,
+                    dc.id AS chunk_id,
+                    dc.chunk_index,
+                    dc.chunk_text
+                FROM documents d
+                LEFT JOIN document_chunks dc ON dc.document_id = d.id
+                WHERE d.company_id = %s
+                  AND d.status = 'processed'
+                  AND COALESCE(d.raw_text, '') <> ''
+                ORDER BY d.created_at DESC, dc.chunk_index ASC NULLS LAST
                 """,
                 (company_id,),
             )
             rows = cur.fetchall()
 
-    return [{"id": row[0], "title": row[1], "raw_text": row[2]} for row in rows]
+    documents_by_id: dict[int, dict[str, Any]] = {}
+    for document_id, title, raw_text, chunk_id, chunk_index, chunk_text in rows:
+        doc = documents_by_id.setdefault(
+            document_id,
+            {
+                "id": document_id,
+                "title": title,
+                "raw_text": raw_text or "",
+                "chunks": [],
+            },
+        )
+        if chunk_id and chunk_text:
+            doc["chunks"].append(
+                {
+                    "chunk_id": chunk_id,
+                    "chunk_index": chunk_index or len(doc["chunks"]) + 1,
+                    "text": chunk_text,
+                }
+            )
+
+    return list(documents_by_id.values())
+
+
+def _load_course_titles_by_document(company_id: int, document_ids: list[int]) -> dict[int, list[str]]:
+    if not document_ids:
+        return {}
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT x.document_id, x.title
+                FROM (
+                    SELECT cdl.document_id, c.title
+                    FROM course_document_links cdl
+                    JOIN courses c ON c.id = cdl.course_id
+                    WHERE c.company_id = %s
+                      AND c.status <> 'archived'
+                      AND cdl.document_id = ANY(%s)
+
+                    UNION
+
+                    SELECT cv.generated_from_document_id AS document_id, c.title
+                    FROM course_versions cv
+                    JOIN courses c ON c.id = cv.course_id
+                    WHERE c.company_id = %s
+                      AND c.status <> 'archived'
+                      AND cv.generated_from_document_id = ANY(%s)
+                ) x
+                WHERE x.document_id IS NOT NULL
+                ORDER BY x.document_id, x.title
+                """,
+                (company_id, document_ids, company_id, document_ids),
+            )
+            rows = cur.fetchall()
+
+    result: dict[int, list[str]] = defaultdict(list)
+    for document_id, title in rows:
+        if title and title not in result[document_id]:
+            result[document_id].append(title)
+    return dict(result)
+
+
+def _make_course_source(
+    document_id: int,
+    course_titles: list[str],
+    *,
+    chunk_id: int | None,
+    score: float,
+) -> ChatbotSourceResponse | None:
+    cleaned_titles = [title.strip() for title in course_titles if title and title.strip()]
+    if not cleaned_titles:
+        return None
+    return ChatbotSourceResponse(
+        document_id=document_id,
+        document_title=", ".join(cleaned_titles),
+        course_titles=cleaned_titles,
+        chunk_id=chunk_id,
+        relevance_score=round(score, 2),
+    )
 
 
 def _build_context(company_id: int, query: str) -> tuple[list[dict[str, Any]], list[ChatbotSourceResponse], float]:
@@ -416,53 +826,107 @@ def _build_context(company_id: int, query: str) -> tuple[list[dict[str, Any]], l
     if not documents:
         raise HTTPException(
             status_code=400,
-            detail="Сначала загрузи и обработай хотя бы один документ. Бот отвечает только по обработанным файлам.",
+            detail="Сначала загрузи и обработай хотя бы один документ. Бот отвечает только по обработанным материалам курса.",
         )
-
-    scored_docs = []
-    for doc in documents:
-        score = _score_text(query, doc["raw_text"] or "")
-        scored_docs.append({**doc, "score": score})
-    scored_docs.sort(key=lambda item: item["score"], reverse=True)
-    best_doc = scored_docs[0]
 
     passages: list[dict[str, Any]] = []
-    for index, passage in enumerate(_split_document_into_passages(best_doc["raw_text"] or ""), start=1):
-        passages.append(
-            {
-                "document_id": best_doc["id"],
-                "chunk_id": index,
-                "title": best_doc["title"],
-                "text": passage,
-                "score": _score_text(query, passage),
-                "order": index,
+    low_value_passages: list[dict[str, Any]] = []
+
+    for doc in documents:
+        source_chunks: list[dict[str, Any]] = []
+        if doc["chunks"]:
+            source_chunks = [
+                {
+                    "chunk_id": chunk["chunk_id"],
+                    "chunk_index": chunk["chunk_index"] or index,
+                    "text": chunk["text"] or "",
+                }
+                for index, chunk in enumerate(doc["chunks"], start=1)
+            ]
+        else:
+            source_chunks = [
+                {"chunk_id": None, "chunk_index": index, "text": passage}
+                for index, passage in enumerate(_split_document_into_passages(doc["raw_text"] or ""), start=1)
+            ]
+
+        for chunk in source_chunks:
+            raw_text = chunk["text"] or ""
+            cleaned = _clean_context_text(raw_text)
+            if not cleaned:
+                continue
+
+            item = {
+                "document_id": doc["id"],
+                "document_title": doc["title"],
+                "chunk_id": chunk["chunk_id"],
+                "chunk_index": chunk["chunk_index"],
+                "text": cleaned,
+                "score": _score_text(query, cleaned),
             }
-        )
+
+            if _looks_like_toc_or_heading_list(raw_text) or _looks_like_toc_or_heading_list(cleaned):
+                low_value_passages.append(item)
+                continue
+            passages.append(item)
+
+    if not passages and low_value_passages:
+        # Фолбэк только на случай, если документ реально состоит из очень коротких блоков.
+        passages = low_value_passages
+
+    if not passages:
+        raise HTTPException(status_code=400, detail="Обработанные материалы есть, но в них нет текста для поиска ответа.")
 
     passages.sort(key=lambda item: item["score"], reverse=True)
-    top = [item for item in passages if item["score"] > 0][:4]
-    if not top:
-        top = passages[:3]
+    best_score = float(passages[0]["score"])
 
-    chosen_orders = sorted({item["order"] for item in top})
-    expanded_orders = set()
-    for order in chosen_orders:
-        expanded_orders.update({order - 1, order, order + 1})
+    meaningful = [item for item in passages if item["score"] > 0]
+    if not meaningful:
+        if _looks_like_random_short_token(query):
+            return [], [], 0.0
+        return passages[:4], [], 0.0
 
-    selected = [item for item in passages if item["order"] in expanded_orders and item["order"] > 0]
-    selected.sort(key=lambda item: item["order"])
+    # Берем только самые релевантные смысловые фрагменты. Соседние чанки больше не добавляем автоматически,
+    # потому что рядом часто лежит оглавление или другой раздел, который портит ответ.
+    selected: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+    for item in meaningful:
+        fingerprint = re.sub(r"\W+", "", item["text"].lower())[:220]
+        if fingerprint in seen_texts:
+            continue
+        seen_texts.add(fingerprint)
+        selected.append(item)
+        if len(selected) >= 6:
+            break
 
-    sources = [
-        ChatbotSourceResponse(
-            document_id=best_doc["id"],
-            document_title=best_doc["title"],
-            chunk_id=None,
-            relevance_score=round(best_doc["score"], 2),
+    # Для определения лучше дать модели самый сильный фрагмент первым.
+    selected.sort(key=lambda item: item["score"], reverse=True)
+
+    document_ids = list({item["document_id"] for item in selected})
+    course_titles_by_doc = _load_course_titles_by_document(company_id, document_ids)
+
+    doc_best: dict[int, dict[str, Any]] = {}
+    for item in selected:
+        current = doc_best.get(item["document_id"])
+        if current is None or item["score"] > current["score"]:
+            doc_best[item["document_id"]] = item
+
+    for item in selected:
+        titles = course_titles_by_doc.get(item["document_id"], [])
+        item["course_titles"] = titles
+        item["course_hint"] = ", ".join(titles) if titles else "Материалы курса"
+
+    sources: list[ChatbotSourceResponse] = []
+    for document_id, item in sorted(doc_best.items(), key=lambda pair: pair[1]["score"], reverse=True):
+        source = _make_course_source(
+            document_id,
+            course_titles_by_doc.get(document_id, []),
+            chunk_id=item.get("chunk_id"),
+            score=float(item["score"]),
         )
-    ]
+        if source:
+            sources.append(source)
 
-    return selected[:6], sources, float(best_doc["score"])
-
+    return selected, sources, best_score
 
 def _ensure_session_owner(session_id: int, user_id: int) -> tuple[int, datetime]:
     with get_postgres_connection() as conn:
@@ -490,27 +954,64 @@ def _load_sources_by_turn_ids(turn_ids: list[int]) -> dict[int, list[ChatbotSour
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT bqs.bot_query_id, bqs.document_id, d.title, bqs.chunk_id, bqs.relevance_score
-                FROM bot_query_sources bqs
+                SELECT bq.id AS bot_query_id,
+                       bqs.document_id,
+                       bqs.chunk_id,
+                       bqs.relevance_score,
+                       csrc.course_title
+                FROM bot_queries bq
+                JOIN bot_query_sources bqs ON bqs.bot_query_id = bq.id
                 JOIN documents d ON d.id = bqs.document_id
-                WHERE bqs.bot_query_id = ANY(%s)
-                ORDER BY bqs.bot_query_id, bqs.id
+                LEFT JOIN LATERAL (
+                    SELECT DISTINCT c.title AS course_title
+                    FROM courses c
+                    WHERE c.company_id = bq.company_id
+                      AND c.status <> 'archived'
+                      AND (
+                          EXISTS (
+                              SELECT 1
+                              FROM course_document_links cdl
+                              WHERE cdl.course_id = c.id
+                                AND cdl.document_id = bqs.document_id
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM course_versions cv
+                              WHERE cv.course_id = c.id
+                                AND cv.generated_from_document_id = bqs.document_id
+                          )
+                      )
+                ) csrc ON TRUE
+                WHERE bq.id = ANY(%s)
+                ORDER BY bq.id, bqs.id, csrc.course_title
                 """,
                 (turn_ids,),
             )
             rows = cur.fetchall()
 
-    result: dict[int, list[ChatbotSourceResponse]] = {}
-    for bot_query_id, document_id, title, chunk_id, relevance_score in rows:
-        result.setdefault(bot_query_id, []).append(
-            ChatbotSourceResponse(
-                document_id=document_id,
-                document_title=title,
-                chunk_id=chunk_id,
-                relevance_score=float(relevance_score) if relevance_score is not None else None,
-            )
+    grouped: dict[tuple[int, int, int | None, float | None], list[str]] = defaultdict(list)
+    for bot_query_id, document_id, chunk_id, relevance_score, course_title in rows:
+        key = (
+            bot_query_id,
+            document_id,
+            chunk_id,
+            float(relevance_score) if relevance_score is not None else None,
         )
-    return result
+        if course_title and course_title not in grouped[key]:
+            grouped[key].append(course_title)
+
+    result: dict[int, list[ChatbotSourceResponse]] = defaultdict(list)
+    for (bot_query_id, document_id, chunk_id, relevance_score), course_titles in grouped.items():
+        source = _make_course_source(
+            document_id,
+            course_titles,
+            chunk_id=chunk_id,
+            score=relevance_score or 0.0,
+        )
+        if source:
+            result[bot_query_id].append(source)
+
+    return dict(result)
 
 
 @router.get("/sessions", response_model=list[ChatbotSessionSummaryResponse])
@@ -609,26 +1110,35 @@ def send_message_to_chatbot(
     question = payload.query.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Вопрос не должен быть пустым")
+
+    session_id, _ = _ensure_session_owner(session_id, current_user["id"])
+    sources: list[ChatbotSourceResponse] = []
+
     if _looks_like_gibberish(question):
-        answer_text = "Я не смог понять вопрос. Попробуй сформулировать его обычными словами, например: кто типичный покупатель, какие тарифы есть или чем отличаются продукты."
-        sources: list[ChatbotSourceResponse] = []
-        session_id, _ = _ensure_session_owner(session_id, current_user["id"])
+        answer_text = _GIBBERISH_MESSAGE
     else:
-        session_id, _ = _ensure_session_owner(session_id, current_user["id"])
-        context_sections, sources, _best_score = _build_context(current_user["company_id"], question)
+        context_sections, sources, best_score = _build_context(current_user["company_id"], question)
 
-        answer_text = ""
-        try:
-            answer_text = _generate_answer_with_llm(question, context_sections)
-        except Exception:
+        if best_score <= 0 and _looks_like_random_short_token(question):
+            answer_text = _GIBBERISH_MESSAGE
+            sources = []
+        elif best_score <= 0:
+            answer_text = _NOT_FOUND_MESSAGE
+            sources = []
+        else:
             answer_text = ""
+            try:
+                answer_text = _generate_answer_with_llm(question, context_sections)
+            except Exception:
+                answer_text = ""
 
-        if _answer_is_bad(question, answer_text):
-            answer_text = _extractive_answer(question, context_sections)
+            if _answer_is_bad(question, answer_text):
+                answer_text = _extractive_answer(question, context_sections)
 
-        answer_text = _cleanup_answer_text(answer_text)
-        if _answer_is_bad(question, answer_text):
-            answer_text = "Я не смог сформировать аккуратный ответ по этому вопросу на основе документа. Попробуй задать вопрос точнее или сформулировать его по-другому."
+            answer_text = _cleanup_answer_text(answer_text)
+            if _answer_is_bad(question, answer_text):
+                answer_text = _NOT_FOUND_MESSAGE
+                sources = []
 
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
