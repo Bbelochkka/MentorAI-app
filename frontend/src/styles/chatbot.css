@@ -215,7 +215,7 @@
   position: sticky;
   bottom: 0;
   padding: 10px 0 0;
-  background: linear-gradient(180deg, rgba(247, 245, 241, 0) 0%, rgba(247, 245, 241, 0.92) 24%, #f7f5f1 52%);
+  background: transparent;
   flex-shrink: 0;
 }
 
