@@ -43,10 +43,10 @@ export function Sidebar() {
       </div>
 
       <div className="sidebar-bottom">
-        <button type="button" className="chatbot-shortcut">
+        <NavLink to="/app/chatbot" className={({ isActive }) => `chatbot-shortcut ${isActive ? 'active' : ''}`}>
           <span className="chatbot-shortcut__icon" />
           <span>Чат-бот</span>
-        </button>
+        </NavLink>
       </div>
     </aside>
   );

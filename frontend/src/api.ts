@@ -578,3 +578,86 @@ export async function getAttemptResult(attemptId: number): Promise<TestAttemptRe
 
   return response.json();
 }
+export interface ChatbotAskPayload {
+  query: string;
+}
+
+export interface ChatbotSourceDto {
+  document_id: number;
+  document_title: string;
+  chunk_id?: number | null;
+  relevance_score?: number | null;
+}
+
+export interface ChatbotTurnDto {
+  id: number;
+  query_text: string;
+  answer_text: string;
+  created_at: string;
+  sources: ChatbotSourceDto[];
+}
+
+export interface ChatbotSessionSummaryDto {
+  id: number;
+  created_at: string;
+  last_question?: string | null;
+}
+
+export interface ChatbotSessionDto {
+  id: number;
+  created_at: string;
+  last_question?: string | null;
+  interactions: ChatbotTurnDto[];
+}
+
+export async function getChatbotSessions(): Promise<ChatbotSessionSummaryDto[]> {
+  const response = await authorizedFetch(`${API_URL}/api/chatbot/sessions`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function createChatbotSession(): Promise<ChatbotSessionSummaryDto> {
+  const response = await authorizedFetch(`${API_URL}/api/chatbot/sessions`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function getChatbotSession(sessionId: number): Promise<ChatbotSessionDto> {
+  const response = await authorizedFetch(`${API_URL}/api/chatbot/sessions/${sessionId}`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function sendChatbotMessage(
+  sessionId: number,
+  payload: ChatbotAskPayload
+): Promise<ChatbotTurnDto> {
+  const response = await authorizedFetch(`${API_URL}/api/chatbot/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+

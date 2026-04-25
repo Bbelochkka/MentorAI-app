@@ -4,6 +4,7 @@ from uuid import uuid4
 import logging
 from typing import Any
 from minio.error import S3Error
+from .chatbot import router as chatbot_router
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -283,11 +284,21 @@ app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=li
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(chatbot_router)
+
 
 
 @app.get("/health", response_model=HealthResponse)
