@@ -7,6 +7,7 @@ import { DocumentsPage } from './DocumentsPage';
 import { TestsPage } from './TestsPage';
 import { TestDetailPage } from './TestDetailPage';
 import ChatbotPage from './ChatbotPage';
+import DialogTrainerPage from './DialogTrainerPage';
 
 function PlaceholderPage({ title, description }: { title: string; description: string }) {
   return (
@@ -36,15 +37,7 @@ export function DashboardPage() {
           <Route path="tests" element={<TestsPage />} />
           <Route path="tests/:testId" element={<TestDetailPage />} />
           <Route path="chatbot" element={<ChatbotPage />} />
-          <Route
-            path="trainer"
-            element={
-              <PlaceholderPage
-                title="Диалоговый тренажёр"
-                description="Этот раздел позже будет доработан в рамках общего проекта."
-              />
-            }
-          />
+          <Route path="trainer" element={<DialogTrainerPage />} />
           <Route
             path="analytics"
             element={
