@@ -14,6 +14,7 @@ from .course_generation import (
     validate_generated_course,
 )
 from .llm_provider import LLMProviderError, get_llm_provider
+from .job_queue import JobFailedError, JobTimeoutError, run_generation_job_sync
 from .config import settings
 from .document_processing import extract_text_by_file_type, split_text_into_chunks
 from .infrastructure import (
@@ -878,222 +879,24 @@ def generate_course_draft(
 ) -> CourseDraftResponse:
     require_admin_user(current_user)
 
-    title = payload.title.strip()
-    document_ids = payload.document_ids
-
-    if not title:
-        raise HTTPException(status_code=400, detail="Название курса обязательно")
-
-    if not document_ids:
-        raise HTTPException(status_code=400, detail="Нужно выбрать хотя бы один документ")
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT id, title, raw_text, status
-                FROM documents
-                WHERE company_id = %s
-                  AND id = ANY(%s)
-                ORDER BY created_at DESC
-                """,
-                (current_user["company_id"], document_ids),
-            )
-            rows = cur.fetchall()
-
-            if len(rows) != len(document_ids):
-                raise HTTPException(status_code=404, detail="Часть документов не найдена")
-
-            not_processed = [row[1] for row in rows if row[3] != "processed" or not (row[2] or "").strip()]
-            if not_processed:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Перед созданием курса нужно обработать все выбранные документы. "
-                        f"Не обработаны: {', '.join(not_processed)}"
-                    ),
-                )
-
-            chunks_by_document_id: dict[int, list[str]] = {row[0]: [] for row in rows}
-            cur.execute(
-                """
-                SELECT document_id, chunk_text
-                FROM document_chunks
-                WHERE document_id = ANY(%s)
-                ORDER BY document_id, chunk_index
-                """,
-                (document_ids,),
-            )
-            for doc_id, chunk_text in cur.fetchall():
-                chunks_by_document_id.setdefault(doc_id, []).append(chunk_text)
-
-    documents_for_generation: list[dict[str, Any]] = []
-    for doc_id, doc_title, raw_text, _status in rows:
-        documents_for_generation.append(
+    try:
+        result = run_generation_job_sync(
+            "course_generate_draft",
             {
-                "id": doc_id,
-                "title": doc_title,
-                "raw_text": raw_text,
-                "chunks": chunks_by_document_id.get(doc_id, []),
-            }
+                "request_payload": payload.model_dump(),
+                "current_user": {
+                    "id": current_user["id"],
+                    "company_id": current_user["company_id"],
+                },
+            },
+            timeout_seconds=max(settings.llm_timeout_seconds + 300, 600),
         )
+    except JobTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except JobFailedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    structured_documents = prepare_documents_for_course_generation(documents_for_generation)
-
-    llm_provider = None
-    desired_structure_text = (payload.desired_structure or "").strip()
-    if desired_structure_text:
-        try:
-            llm_provider = get_llm_provider()
-        except LLMProviderError:
-            llm_provider = None
-
-    try:
-        generated = build_course_draft_from_documents(
-            course_title=title,
-            structured_documents=structured_documents,
-            additional_requirements=payload.additional_requirements,
-            desired_structure=payload.desired_structure,
-            llm_provider=llm_provider,
-        )
-        validated = validate_generated_course(generated)
-    except ValueError as exc:
-        logger.exception("Ошибка генерации курса")
-        raise HTTPException(status_code=500, detail=f"Не удалось сгенерировать курс: {exc}") from exc
-
-    modules_data: list[dict] = []
-
-    try:
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO courses (
-                        company_id,
-                        title,
-                        description,
-                        created_by,
-                        status,
-                        current_version_no
-                    )
-                    VALUES (%s, %s, %s, %s, 'draft', 1)
-                    RETURNING id
-                    """,
-                    (
-                        current_user["company_id"],
-                        validated["title"],
-                        validated["description"],
-                        current_user["id"],
-                    ),
-                )
-                course_id = cur.fetchone()[0]
-
-                cur.execute(
-                    """
-                    INSERT INTO course_versions (
-                        course_id,
-                        version_number,
-                        generated_from_document_id,
-                        created_by,
-                        status,
-                        notes
-                    )
-                    VALUES (%s, 1, %s, %s, 'draft', %s)
-                    RETURNING id
-                    """,
-                    (
-                        course_id,
-                        document_ids[0] if document_ids else None,
-                        current_user["id"],
-                        "Черновик курса собран строго по структуре документов; optional-поля применены как исключения и настройки блока Важно запомнить",
-                    ),
-                )
-                version_id = cur.fetchone()[0]
-
-                for document_id in document_ids:
-                    cur.execute(
-                        """
-                        INSERT INTO course_document_links (
-                            course_id,
-                            document_id
-                        )
-                        VALUES (%s, %s)
-                        """,
-                        (course_id, document_id),
-                    )
-
-                for module_index, module in enumerate(validated["modules"], start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO course_modules (
-                            course_version_id,
-                            title,
-                            sort_order
-                        )
-                        VALUES (%s, %s, %s)
-                        RETURNING id
-                        """,
-                        (
-                            version_id,
-                            module["title"],
-                            module_index,
-                        ),
-                    )
-                    module_id = cur.fetchone()[0]
-
-                    topics_data: list[dict] = []
-                    for topic_index, topic in enumerate(module["topics"], start=1):
-                        cur.execute(
-                            """
-                            INSERT INTO course_topics (
-                                module_id,
-                                title,
-                                content,
-                                sort_order
-                            )
-                            VALUES (%s, %s, %s, %s)
-                            RETURNING id
-                            """,
-                            (
-                                module_id,
-                                topic["title"],
-                                topic["content"],
-                                topic_index,
-                            ),
-                        )
-                        topic_id = cur.fetchone()[0]
-
-                        topics_data.append(
-                            {
-                                "id": topic_id,
-                                "title": topic["title"],
-                                "content": topic["content"],
-                                "order_index": topic_index,
-                            }
-                        )
-
-                    modules_data.append(
-                        {
-                            "id": module_id,
-                            "title": module["title"],
-                            "order_index": module_index,
-                            "topics": topics_data,
-                        }
-                    )
-
-            conn.commit()
-    except Exception as exc:
-        logger.exception("Ошибка сохранения курса в БД")
-        raise HTTPException(status_code=500, detail=f"Ошибка сохранения курса в БД: {exc}") from exc
-
-    return build_course_draft_response(
-        course_id=course_id,
-        version_id=version_id,
-        title=validated["title"],
-        description=validated["description"],
-        status_value="draft",
-        modules_data=modules_data,
-    )
+    return CourseDraftResponse.model_validate(result)
 
 @app.delete("/api/documents/{document_id}")
 def delete_document(document_id: int, current_user: dict = Depends(get_current_user)) -> dict[str, str]:
@@ -1859,152 +1662,27 @@ def delete_test(test_id: int, current_user: dict = Depends(get_current_user)) ->
 
 
 @app.post("/api/tests/generate-draft", response_model=TestDraftResponse)
-def generate_test_draft(payload: TestGenerateRequest, current_user: dict = Depends(get_current_user)) -> TestDraftResponse:
+def generate_test_draft(
+    payload: TestGenerateRequest,
+    current_user: dict = Depends(get_current_user),
+) -> TestDraftResponse:
     require_admin_user(current_user)
-    title = _normalize_test_title(payload.title)
-    question_count = parse_desired_question_count(payload.desired_question_count)
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT c.id, c.title
-                FROM courses c
-                WHERE c.id = %s
-                  AND c.company_id = %s
-                  AND EXISTS (
-                    SELECT 1
-                    FROM course_document_links l
-                    JOIN documents d ON d.id = l.document_id
-                    WHERE l.course_id = c.id AND d.company_id = c.company_id
-                  )
-                """,
-                (payload.course_id, current_user["company_id"]),
-            )
-            course_row = cur.fetchone()
-            if not course_row:
-                raise HTTPException(status_code=400, detail="Можно выбрать только курс вашей компании, созданный на основе документов")
-
-            course_id, course_title = course_row
-
-            cur.execute(
-                """
-                SELECT cm.title, ct.id, ct.title, ct.content, cm.sort_order, ct.sort_order
-                FROM course_versions cv
-                JOIN course_modules cm ON cm.course_version_id = cv.id
-                JOIN course_topics ct ON ct.module_id = cm.id
-                WHERE cv.course_id = %s
-                  AND cv.version_number = (SELECT current_version_no FROM courses WHERE id = %s)
-                ORDER BY cm.sort_order, ct.sort_order
-                """,
-                (course_id, course_id),
-            )
-            topic_rows = cur.fetchall()
-
-    if not topic_rows:
-        raise HTTPException(status_code=400, detail="В выбранном курсе нет тем для генерации теста")
-
-    modules_map: dict[str, dict[str, Any]] = {}
-    for module_title, topic_id, topic_title, topic_content, module_order, topic_order in topic_rows:
-        key = f"{module_order}:{module_title}"
-        modules_map.setdefault(key, {"title": module_title, "order_index": module_order, "topics": []})
-        modules_map[key]["topics"].append({
-            "id": topic_id,
-            "title": topic_title,
-            "content": topic_content,
-            "order_index": topic_order,
-        })
-
-    modules = [item for _, item in sorted(modules_map.items(), key=lambda pair: pair[1]["order_index"])]
-
-    provider = None
-    try:
-        provider = get_llm_provider()
-    except Exception:
-        provider = None
 
     try:
-        generated = build_test_draft_from_course(
-            course_title=course_title,
-            modules=modules,
-            question_count=question_count,
-            required_questions=[],
-            provider=provider,
+        result = run_generation_job_sync(
+            "test_generate_draft",
+            {
+                "request_payload": payload.model_dump(),
+                "current_user": {
+                    "id": current_user["id"],
+                    "company_id": current_user["company_id"],
+                },
+            },
+            timeout_seconds=max(settings.llm_timeout_seconds + 300, 600),
         )
-        validated = validate_generated_test(generated, expected_count=question_count)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Не удалось сгенерировать тест: {exc}") from exc
+    except JobTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except JobFailedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    questions_data: list[dict] = []
-    try:
-        with get_postgres_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO tests (company_id, course_id, title, test_type, status, current_version_no, created_by)
-                    VALUES (%s, %s, %s, 'course', 'draft', 1, %s)
-                    RETURNING id
-                    """,
-                    (current_user["company_id"], course_id, title, current_user["id"]),
-                )
-                test_id = cur.fetchone()[0]
-
-                cur.execute(
-                    """
-                    INSERT INTO test_versions (test_id, version_number, created_by, status)
-                    VALUES (%s, 1, %s, 'draft')
-                    RETURNING id
-                    """,
-                    (test_id, current_user["id"]),
-                )
-                version_id = cur.fetchone()[0]
-
-                for question_index, question in enumerate(validated["questions"], start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO questions (test_version_id, topic_id, question_text, question_type, weight, sort_order)
-                        VALUES (%s, NULL, %s, 'single_choice', 1.0, %s)
-                        RETURNING id
-                        """,
-                        (version_id, question["question_text"], question_index),
-                    )
-                    question_id = cur.fetchone()[0]
-
-                    options_data = []
-                    for option_index, option_text in enumerate(question["options"], start=1):
-                        is_correct = option_index - 1 == question["correct_option_index"]
-                        cur.execute(
-                            """
-                            INSERT INTO question_options (question_id, option_text, is_correct, sort_order)
-                            VALUES (%s, %s, %s, %s)
-                            RETURNING id
-                            """,
-                            (question_id, option_text, is_correct, option_index),
-                        )
-                        option_id = cur.fetchone()[0]
-                        options_data.append({
-                            "id": option_id,
-                            "text": option_text,
-                            "is_correct": is_correct,
-                            "order_index": option_index,
-                        })
-
-                    questions_data.append({
-                        "id": question_id,
-                        "question_text": question["question_text"],
-                        "order_index": question_index,
-                        "options": options_data,
-                    })
-            conn.commit()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ошибка сохранения теста в БД: {exc}") from exc
-
-    return build_test_draft_response(
-        test_id=test_id,
-        version_id=version_id,
-        title=title,
-        status_value='draft',
-        course_id=course_id,
-        course_title=course_title,
-        questions_data=questions_data,
-    )
+    return TestDraftResponse.model_validate(result)

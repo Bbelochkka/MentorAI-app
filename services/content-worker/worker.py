@@ -4,16 +4,22 @@ import logging
 import time
 
 import psycopg
-from minio import Minio
-from redis import Redis
 
-from config import settings
+from app.config import settings
+from app.generation_jobs import run_generation_job
+from app.infrastructure import get_minio_client, get_redis_client
+from app.job_queue import (
+    dequeue_generation_job,
+    mark_generation_job_completed,
+    mark_generation_job_failed,
+    mark_generation_job_running,
+)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
-logger = logging.getLogger('content-worker')
+logger = logging.getLogger("content-worker")
 
 
 def wait_for_dependencies() -> None:
@@ -21,36 +27,47 @@ def wait_for_dependencies() -> None:
         try:
             with psycopg.connect(settings.postgres_dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute('SELECT 1;')
+                    cur.execute("SELECT 1;")
                     cur.fetchone()
 
-            redis_client = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+            redis_client = get_redis_client()
             redis_client.ping()
 
-            minio_client = Minio(
-                settings.minio_endpoint,
-                access_key=settings.minio_access_key,
-                secret_key=settings.minio_secret_key,
-                secure=settings.minio_secure,
-            )
+            minio_client = get_minio_client()
             minio_client.bucket_exists(settings.minio_bucket)
 
-            logger.info('All worker dependencies are available.')
+            logger.info("All worker dependencies are available.")
             return
         except Exception as exc:
-            logger.warning('Dependencies are not ready yet: %s', exc)
+            logger.warning("Dependencies are not ready yet: %s", exc)
             time.sleep(3)
 
 
 def main() -> None:
-    logger.info('Starting content-worker bootstrap...')
-    logger.info('Configured LLM provider: %s (%s)', settings.llm_provider, settings.llm_model)
+    logger.info("Starting content-worker...")
+    logger.info("Configured LLM provider: %s", settings.llm_provider)
     wait_for_dependencies()
 
     while True:
-        logger.info('Worker heartbeat: ready for document processing and LLM jobs.')
-        time.sleep(30)
+        job = dequeue_generation_job(block_timeout_seconds=5)
+        if job is None:
+            continue
+
+        job_id = job["id"]
+        job_type = job["type"]
+        payload = job["payload"]
+
+        logger.info("Started generation job id=%s type=%s", job_id, job_type)
+        mark_generation_job_running(job_id)
+
+        try:
+            result = run_generation_job(job_type, payload)
+            mark_generation_job_completed(job_id, result)
+            logger.info("Completed generation job id=%s type=%s", job_id, job_type)
+        except Exception as exc:
+            logger.exception("Failed generation job id=%s type=%s", job_id, job_type)
+            mark_generation_job_failed(job_id, str(exc))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
