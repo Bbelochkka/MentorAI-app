@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from minio.error import S3Error
 from .chatbot import router as chatbot_router
-
+from .dialog_trainer import router as dialog_trainer_router
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from .course_generation import (
@@ -298,7 +298,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chatbot_router)
-
+app.include_router(dialog_trainer_router)
 
 
 @app.get("/health", response_model=HealthResponse)

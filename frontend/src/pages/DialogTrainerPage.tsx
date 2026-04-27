@@ -76,6 +76,16 @@ type TrainerSessionSummary = {
   client_id: number;
   client_name: string;
   client_position?: string | null;
+  client_age?: number | null;
+  client_temperament?: string | null;
+  client_attitude?: string | null;
+  client_communication_style?: string | null;
+  client_buying_history?: string | null;
+  client_decision_role?: string | null;
+  client_tech_level?: string | null;
+  client_persona?: string | null;
+  client_pain_points?: string | null;
+  client_typical_objections?: string | null;
   difficulty: string;
   mode: string;
   status: string;
@@ -168,7 +178,7 @@ const DEFAULT_CLIENTS: TrainerClient[] = [
     temperament: 'рациональный, быстрый, требовательный',
     attitude: 'занят, готов слушать только конкретику',
     communication_style: 'отвечает коротко, перебивает длинные презентации, просит цифры и сроки',
-    buying_history: 'раньше услугами компании не пользовался',
+    buying_history: 'Нет',
     decision_role: 'лицо, влияющее на решение',
     tech_level: 'высокий',
     persona: 'Деловой и занятый клиент. Если менеджер говорит общо, быстро теряет интерес.',
@@ -183,7 +193,7 @@ const DEFAULT_CLIENTS: TrainerClient[] = [
     temperament: 'доброжелательная, осторожная',
     attitude: 'открыта к разговору, но боится сложных условий',
     communication_style: 'задаёт бытовые вопросы, просит объяснять простыми словами',
-    buying_history: 'покупала SIM-карту NovaMobile для себя',
+    buying_history: 'Да',
     decision_role: 'самостоятельно принимает решение',
     tech_level: 'средний',
     persona: 'Вежлива и готова слушать, если менеджер не давит и объясняет человеческим языком.',
@@ -198,7 +208,7 @@ const DEFAULT_CLIENTS: TrainerClient[] = [
     temperament: 'скептичный, жёсткий, аналитичный',
     attitude: 'сомневается и проверяет каждое обещание',
     communication_style: 'может грубить, если слышит рекламные фразы; уважает точные аргументы',
-    buying_history: 'с компанией не работал, есть негативный опыт с другим оператором',
+    buying_history: 'Нет',
     decision_role: 'ключевое лицо, принимающее решение',
     tech_level: 'высокий',
     persona: 'Не любит мягкие обещания. Ему нужны риски, экономика, пилот и понятный контроль результата.',
@@ -213,7 +223,7 @@ const DEFAULT_CLIENTS: TrainerClient[] = [
     temperament: 'спокойный, осторожный, медленный в принятии решения',
     attitude: 'вежливый, но плохо воспринимает технические термины',
     communication_style: 'часто просит повторить, не любит англицизмы и сложные тарифные формулировки',
-    buying_history: 'пользовался услугами компании несколько лет назад',
+    buying_history: 'Да',
     decision_role: 'самостоятельно принимает решение, но может советоваться с семьёй',
     tech_level: 'низкий',
     persona: 'Не грубит, но легко теряется, если менеджер говорит быстро или технически сложно.',
@@ -347,6 +357,20 @@ function splitLines(value?: string | null) {
   return (value || '').split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+function renderValue(value?: string | number | null) {
+  return value === undefined || value === null || value === '' ? 'не указано' : value;
+}
+
+function formatCompanyUsage(value?: string | null) {
+  const normalized = (value || '').toLowerCase().replace('ё', 'е').trim();
+  if (!normalized) return 'Нет';
+  if (['да', 'yes', 'true', '1'].includes(normalized)) return 'Да';
+  if (['нет', 'no', 'false', '0'].includes(normalized)) return 'Нет';
+  if (normalized.includes('не пользов') || normalized.includes('не работал') || normalized.includes('не покуп')) return 'Нет';
+  if (normalized.includes('польз') || normalized.includes('покуп') || normalized.includes('работал')) return 'Да';
+  return 'Нет';
+}
+
 export function DialogTrainerPage() {
   const [options, setOptions] = useState<TrainerOptions>(DEFAULT_OPTIONS);
   const [sessions, setSessions] = useState<TrainerSessionSummary[]>([]);
@@ -382,6 +406,23 @@ export function DialogTrainerPage() {
   );
 
   const canStart = Boolean(selectedScenario && selectedClient && selectedDifficulty);
+
+  const groupedSessions = useMemo(() => {
+    const sortByDateDesc = (items: TrainerSessionSummary[]) =>
+      [...items].sort((left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime());
+
+    return {
+      exams: sortByDateDesc(sessions.filter((item) => item.mode === 'exam')),
+      practice: sortByDateDesc(sessions.filter((item) => item.mode !== 'exam')),
+    };
+  }, [sessions]);
+
+  const renderHistoryItems = (items: TrainerSessionSummary[]) => items.map((session) => (
+    <button key={session.id} type="button" className="trainer-history-item" onClick={() => void openSession(session.id)}>
+      <span>{session.scenario_title} ({formatDate(session.started_at)})</span>
+      <em>{session.status === 'completed' ? 'перейти к информации' : 'продолжить диалог'}</em>
+    </button>
+  ));
 
   useEffect(() => {
     async function bootstrap() {
@@ -569,17 +610,31 @@ export function DialogTrainerPage() {
               {!isLoading && sessions.length === 0 ? (
                 <p className="trainer-muted">Пока нет завершённых или начатых диалогов. Нажмите «Новый диалог», чтобы начать тренировку.</p>
               ) : null}
-              <div className="trainer-history-list">
-                {sessions.map((session) => (
-                  <button key={session.id} type="button" className="trainer-history-item" onClick={() => void openSession(session.id)}>
-                    <span>{session.scenario_title} ({formatDate(session.started_at)})</span>
-                    <em>{session.status === 'completed' ? 'перейти к информации' : 'продолжить диалог'}</em>
-                  </button>
-                ))}
+              <div className="trainer-history-scroll">
+                {groupedSessions.exams.length ? (
+                  <section className="trainer-history-group">
+                    <h2>Экзамены</h2>
+                    <div className="trainer-history-list">
+                      {renderHistoryItems(groupedSessions.exams)}
+                    </div>
+                  </section>
+                ) : null}
+
+                {groupedSessions.practice.length ? (
+                  <section className="trainer-history-group">
+                    <h2>Тренировочные диалоги</h2>
+                    <div className="trainer-history-list">
+                      {renderHistoryItems(groupedSessions.practice)}
+                    </div>
+                  </section>
+                ) : null}
               </div>
-              <button type="button" className="trainer-primary-btn trainer-new-btn" onClick={openNewDialogModal}>
-                Новый диалог
-              </button>
+
+              <div className="trainer-home-footer">
+                <button type="button" className="trainer-primary-btn trainer-new-btn" onClick={openNewDialogModal}>
+                  Новый диалог
+                </button>
+              </div>
             </div>
           </>
         ) : (
@@ -738,7 +793,11 @@ export function DialogTrainerPage() {
                     <p>{selectedClient.persona}</p>
                     <p><strong>Темперамент:</strong> {selectedClient.temperament}</p>
                     <p><strong>Настрой:</strong> {selectedClient.attitude}</p>
-                    <p><strong>История:</strong> {selectedClient.buying_history}</p>
+                    <p><strong>Стиль общения:</strong> {selectedClient.communication_style}</p>
+                    <p><strong>Пользуется услугами компании:</strong> {formatCompanyUsage(selectedClient.buying_history)}</p>
+                    <p><strong>Роль в решении:</strong> {selectedClient.decision_role}</p>
+                    <p><strong>Боли:</strong> {selectedClient.pain_points}</p>
+                    <p><strong>Типовые возражения:</strong> {selectedClient.typical_objections}</p>
                   </div>
                 ) : null}
 
@@ -752,7 +811,7 @@ export function DialogTrainerPage() {
             ) : null}
 
             <div className="trainer-modal-note">
-              Информация о товарах и услугах для продажи будет взята из опубликованных курсов и обработанных документов компании. Отдельно выбирать товар больше не нужно.
+              Информация о товарах и услугах для продажи будет взята из опубликованных курсов и обработанных документов компании.
             </div>
 
             <div className="trainer-modal-actions">
@@ -783,7 +842,17 @@ export function DialogTrainerPage() {
               </section>
               <section>
                 <b>Оппонент</b>
-                <p>{activeSession.client_name}{activeSession.client_position ? ` — ${activeSession.client_position}` : ''}</p>
+                <p><strong>Имя и роль:</strong> {activeSession.client_name}{activeSession.client_position ? ` — ${activeSession.client_position}` : ''}</p>
+                <p><strong>Возраст:</strong> {renderValue(activeSession.client_age)}</p>
+                <p><strong>Темперамент:</strong> {renderValue(activeSession.client_temperament)}</p>
+                <p><strong>Настрой:</strong> {renderValue(activeSession.client_attitude)}</p>
+                <p><strong>Стиль общения:</strong> {renderValue(activeSession.client_communication_style)}</p>
+                <p><strong>Пользуется услугами компании:</strong> {formatCompanyUsage(activeSession.client_buying_history)}</p>
+                <p><strong>Роль в принятии решения:</strong> {renderValue(activeSession.client_decision_role)}</p>
+                <p><strong>Уровень технической грамотности:</strong> {renderValue(activeSession.client_tech_level)}</p>
+                <p><strong>Описание клиента:</strong> {renderValue(activeSession.client_persona)}</p>
+                <p><strong>Боли:</strong> {renderValue(activeSession.client_pain_points)}</p>
+                <p><strong>Типовые возражения:</strong> {renderValue(activeSession.client_typical_objections)}</p>
               </section>
               <section>
                 <b>Материалы для продажи</b>

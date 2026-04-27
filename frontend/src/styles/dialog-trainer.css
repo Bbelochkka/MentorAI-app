@@ -1,6 +1,7 @@
 .trainer-page {
-  height: auto;
+  height: calc(100vh - 32px);
   min-height: 0;
+  overflow: hidden;
   color: #4b3f39;
 }
 
@@ -13,14 +14,16 @@
 .trainer-shell {
   width: 100%;
   max-width: 1240px;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .trainer-page--chat .trainer-shell {
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 .trainer-breadcrumb {
@@ -55,10 +58,11 @@
 }
 
 .trainer-metrics {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
-  margin-bottom: 30px;
+  margin-bottom: 24px;
 }
 
 .trainer-metric-card {
@@ -130,7 +134,15 @@
 .trainer-ring--red { background: conic-gradient(#ff6f7b 0 25%, #e9e4df 25% 100%); }
 .trainer-ring--gray { background: conic-gradient(#c7c0ba 0 75%, #e9e4df 75% 100%); }
 
+.trainer-home {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .trainer-home h1 {
+  flex: 0 0 auto;
   margin: 0;
   color: #4a403b;
   font-size: 34px;
@@ -144,11 +156,30 @@
   font-size: 18px;
 }
 
+.trainer-history-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 12px 8px 0;
+  margin-top: 20px;
+}
+
+.trainer-history-group + .trainer-history-group {
+  margin-top: 22px;
+}
+
+.trainer-history-group h2 {
+  margin: 0 0 10px;
+  color: #4b3f39;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
 .trainer-history-list {
   display: grid;
   gap: 10px;
   max-width: 920px;
-  margin-top: 22px;
 }
 
 .trainer-history-item {
@@ -175,8 +206,13 @@
   font-size: 14px;
 }
 
+.trainer-home-footer {
+  flex: 0 0 auto;
+  padding: 16px 0 20px;
+  background: #fffdf9;
+}
+
 .trainer-new-btn {
-  margin-top: 34px;
   min-width: 160px;
 }
 
@@ -392,12 +428,13 @@
 }
 
 .trainer-result-card {
+  flex: 0 0 auto;
   border: 1px solid #ded4ca;
   border-radius: 22px;
   background: #fffdfa;
-  padding: 14px 16px;
-  max-height: 220px;
-  overflow-y: auto;
+  padding: 12px 14px;
+  max-height: none;
+  overflow: visible;
 }
 
 .trainer-result-head {
@@ -410,7 +447,7 @@
 
 .trainer-result-card h2 {
   margin: 0;
-  font-size: 21px;
+  font-size: 20px;
 }
 
 .trainer-result-score {
@@ -428,14 +465,18 @@
 
 .trainer-result-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trainer-result-grid div:last-child {
+  grid-column: 1 / -1;
 }
 
 .trainer-result-grid div {
   border: 1px solid #e8ded4;
   border-radius: 16px;
-  padding: 12px;
+  padding: 10px 12px;
   background: #fffaf5;
 }
 
@@ -445,10 +486,10 @@
 }
 
 .trainer-result-grid p {
-  margin: 0 0 6px;
+  margin: 0 0 5px;
   color: #6a5b52;
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.34;
 }
 
 .trainer-modal-backdrop {
@@ -470,7 +511,7 @@
   border-radius: 18px;
   background: #fffdfa;
   box-shadow: 0 24px 70px rgba(62, 46, 35, 0.18);
-  padding: 22px;
+  padding: 22px 22px 0;
 }
 
 .trainer-modal--wide {
@@ -575,10 +616,17 @@
 }
 
 .trainer-modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 20px;
+  margin: 20px -22px 0;
+  padding: 16px 22px 22px;
+  border-top: 1px solid rgba(222, 212, 202, 0.72);
+  border-radius: 0 0 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 250, 0.9), #fffdfa 28%);
 }
 
 .trainer-brief-content {
@@ -610,10 +658,13 @@
 }
 
 @media (max-width: 900px) {
+  .trainer-page { height: auto; min-height: calc(100vh - 32px); overflow: visible; }
   .trainer-page--chat { height: auto; overflow: visible; }
   .trainer-page--chat .trainer-shell { height: auto; display: block; }
   .trainer-chat-layout { height: auto; }
   .trainer-thread { max-height: 420px; }
+  .trainer-home { min-height: 520px; }
+  .trainer-history-scroll { max-height: 360px; }
   .trainer-metrics,
   .trainer-result-grid,
   .trainer-parameter-cards,

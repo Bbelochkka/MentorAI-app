@@ -1,5 +1,14 @@
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from collections import defaultdict
@@ -15,6 +24,7 @@ from .infrastructure import get_postgres_connection
 from .security import get_current_user
 
 router = APIRouter(prefix="/api/chatbot", tags=["chatbot"])
+logger = logging.getLogger(__name__)
 
 
 class ChatbotAskRequest(BaseModel):
@@ -575,6 +585,11 @@ def _get_gigachat_token() -> str:
 
 
 def _call_llm(prompt: str, *, system_prompt: str, max_tokens: int = 900) -> str:
+    """Общий вызов LLM через провайдера из LLM_PROVIDER.
+
+    Используется как резервный сценарий для чат-бота, если GigaChat
+    недоступен или у него закончилась квота.
+    """
     provider = settings.llm_provider.lower()
 
     if provider == "ollama":
@@ -602,36 +617,98 @@ def _call_llm(prompt: str, *, system_prompt: str, max_tokens: int = 900) -> str:
         return (response.json().get("response") or "").strip()
 
     if provider == "gigachat":
-        token = _get_gigachat_token()
-        timeout = httpx.Timeout(connect=20.0, read=settings.llm_timeout_seconds, write=60.0, pool=60.0)
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                f"{settings.gigachat_base_url.rstrip('/')}/chat/completions",
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.gigachat_model,
-                    "temperature": 0.05,
-                    "top_p": 0.8,
-                    "max_tokens": max_tokens,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-            )
-        if response.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Ошибка запроса к GigaChat: status={response.status_code}, body={response.text}",
-            )
-        data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return _call_gigachat_llm(prompt, system_prompt=system_prompt, max_tokens=max_tokens)
 
     raise HTTPException(status_code=500, detail=f"Неизвестный LLM_PROVIDER: {settings.llm_provider}")
+
+
+def _call_gigachat_llm(prompt: str, *, system_prompt: str, max_tokens: int = 900) -> str:
+    """Прямой вызов GigaChat для чат-бота.
+
+    Эта функция не смотрит на LLM_PROVIDER. Она нужна, чтобы чат-бот
+    всегда обращался именно к GigaChat, даже если тренажёр или генератор
+    временно работают через Ollama.
+    """
+    if not (settings.gigachat_auth_key or "").strip():
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Для чат-бота не задан GIGACHAT_AUTH_KEY. "
+                "Добавь ключ в корневой .env и пересоздай content-service."
+            ),
+        )
+
+    token = _get_gigachat_token()
+    timeout = httpx.Timeout(connect=20.0, read=settings.llm_timeout_seconds, write=60.0, pool=60.0)
+
+    logger.info(
+        "Chatbot calls GigaChat: model=%s, prompt_chars=%s",
+        settings.gigachat_model,
+        len(prompt),
+    )
+
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            f"{settings.gigachat_base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.gigachat_model,
+                "temperature": 0.05,
+                "top_p": 0.8,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ошибка запроса к GigaChat: status={response.status_code}, body={response.text}",
+        )
+
+    data = response.json()
+    try:
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GigaChat вернул неожиданный формат ответа: {data}",
+        ) from exc
+
+
+def _call_preferred_chatbot_llm(prompt: str, *, system_prompt: str, max_tokens: int = 900) -> str:
+    """Для чат-бота сначала пробуем GigaChat, а при сбое возвращаемся к текущей логике.
+
+    Логика:
+    1. Если в .env задан GIGACHAT_AUTH_KEY, пробуем GigaChat независимо от LLM_PROVIDER.
+    2. Если GigaChat недоступен, закончились токены, ошибка ключа или таймаут —
+       пишем причину в логи и пробуем провайдера из LLM_PROVIDER.
+    3. Если LLM_PROVIDER тоже gigachat, повторно его не вызываем: ошибка уйдёт выше,
+       а send_message_to_chatbot сделает extractive fallback по найденному контексту.
+    """
+    gigachat_key = (settings.gigachat_auth_key or "").strip()
+
+    if gigachat_key:
+        try:
+            return _call_gigachat_llm(prompt, system_prompt=system_prompt, max_tokens=max_tokens)
+        except Exception as exc:
+            logger.warning(
+                "GigaChat недоступен для чат-бота, включаю резервную логику: %s",
+                exc,
+                exc_info=True,
+            )
+
+            if settings.llm_provider.lower() == "gigachat":
+                raise
+
+    return _call_llm(prompt, system_prompt=system_prompt, max_tokens=max_tokens)
 
 
 def _render_context(context_sections: list[dict[str, Any]]) -> str:
@@ -684,7 +761,7 @@ def _generate_answer_with_llm(question: str, context_sections: list[dict[str, An
 5. Если данных недостаточно, так и напиши.
 """.strip()
 
-    answer = _call_llm(prompt, system_prompt=system_prompt, max_tokens=750)
+    answer = _call_preferred_chatbot_llm(prompt, system_prompt=system_prompt, max_tokens=750)
     answer = _cleanup_answer_text(answer)
 
     if _answer_is_bad(question, answer):
@@ -711,7 +788,7 @@ def _generate_answer_with_llm(question: str, context_sections: list[dict[str, An
 - 1-3 коротких абзаца;
 - если точного ответа нет, честно скажи, что информации в материалах курса недостаточно.
 """.strip()
-        answer = _call_llm(rewrite_prompt, system_prompt=system_prompt, max_tokens=650)
+        answer = _call_preferred_chatbot_llm(rewrite_prompt, system_prompt=system_prompt, max_tokens=650)
         answer = _cleanup_answer_text(answer)
 
     return answer
@@ -1014,6 +1091,52 @@ def _load_sources_by_turn_ids(turn_ids: list[int]) -> dict[int, list[ChatbotSour
     return dict(result)
 
 
+@router.get("/llm-check")
+def chatbot_llm_check(current_user: dict = Depends(get_current_user)) -> dict[str, str]:
+    """Проверка LLM-логики чат-бота.
+
+    Сначала проверяем GigaChat. Если он недоступен, проверяем резервный
+    провайдер из LLM_PROVIDER. Так видно, чем реально сейчас отвечает чат-бот.
+    """
+    prompt = "Ответь одним коротким словом: работает?"
+    system_prompt = "Ты тестовый ассистент. Ответь кратко."
+
+    if (settings.gigachat_auth_key or "").strip():
+        try:
+            answer = _call_gigachat_llm(prompt, system_prompt=system_prompt, max_tokens=60)
+            return {
+                "primary_provider": "gigachat",
+                "used_provider": "gigachat",
+                "model": settings.gigachat_model,
+                "status": "ok",
+                "answer": answer,
+            }
+        except Exception as exc:
+            logger.warning("GigaChat llm-check failed: %s", exc, exc_info=True)
+            gigachat_error = str(exc)
+    else:
+        gigachat_error = "GIGACHAT_AUTH_KEY is empty"
+
+    try:
+        answer = _call_llm(prompt, system_prompt=system_prompt, max_tokens=60)
+        return {
+            "primary_provider": "gigachat",
+            "used_provider": settings.llm_provider,
+            "model": settings.llm_model if settings.llm_provider.lower() == "ollama" else settings.gigachat_model,
+            "status": "fallback_ok",
+            "gigachat_error": gigachat_error[:800],
+            "answer": answer,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Не работает ни GigaChat, ни резервный LLM_PROVIDER. "
+                f"GigaChat: {gigachat_error}. Reserve: {exc}"
+            ),
+        ) from exc
+
+
 @router.get("/sessions", response_model=list[ChatbotSessionSummaryResponse])
 def list_chatbot_sessions(current_user: dict = Depends(get_current_user)) -> list[ChatbotSessionSummaryResponse]:
     with get_postgres_connection() as conn:
@@ -1126,11 +1249,15 @@ def send_message_to_chatbot(
             answer_text = _NOT_FOUND_MESSAGE
             sources = []
         else:
-            answer_text = ""
             try:
                 answer_text = _generate_answer_with_llm(question, context_sections)
-            except Exception:
-                answer_text = ""
+            except Exception as exc:
+                logger.warning(
+                    "LLM не смогла сформировать ответ чат-бота, использую extractive fallback: %s",
+                    exc,
+                    exc_info=True,
+                )
+                answer_text = _extractive_answer(question, context_sections)
 
             if _answer_is_bad(question, answer_text):
                 answer_text = _extractive_answer(question, context_sections)
