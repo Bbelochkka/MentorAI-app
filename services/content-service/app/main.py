@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
+from .analytics import router as analytics_router
 from pathlib import Path
 from uuid import uuid4
 import logging
 from typing import Any
 from minio.error import S3Error
+from .users_admin import router as users_admin_router
 from .chatbot import router as chatbot_router
 from .dialog_trainer import router as dialog_trainer_router
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
@@ -300,6 +302,8 @@ app.add_middleware(
 )
 app.include_router(chatbot_router)
 app.include_router(dialog_trainer_router)
+app.include_router(analytics_router)
+app.include_router(users_admin_router)
 
 
 @app.get("/health", response_model=HealthResponse)

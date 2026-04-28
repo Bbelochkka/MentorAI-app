@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Sidebar } from '../components/Sidebar';
-import { getStoredUser, isLearnerUser } from '../api';
+import { getStoredUser, isLearnerUser, isAdminUser } from '../api';
+import { EmployeesAdminPage } from './EmployeesAdminPage';
 import { CoursesPage } from './CoursesPage';
 import { CourseDetailPage } from './CourseDetailPage';
 import { DocumentsPage } from './DocumentsPage';
@@ -8,6 +9,10 @@ import { TestsPage } from './TestsPage';
 import { TestDetailPage } from './TestDetailPage';
 import ChatbotPage from './ChatbotPage';
 import DialogTrainerPage from './DialogTrainerPage';
+import { AnalyticsEmployeesPage } from './AnalyticsEmployeesPage';
+import { EmployeeAnalyticsDetailPage } from './EmployeeAnalyticsDetailPage';
+import { AnalyticsTestsPage } from './AnalyticsTestsPage';
+import { TestAnalyticsDetailPage } from './TestAnalyticsDetailPage';
 
 function PlaceholderPage({ title, description }: { title: string; description: string }) {
   return (
@@ -23,7 +28,8 @@ function PlaceholderPage({ title, description }: { title: string; description: s
 export function DashboardPage() {
   const currentUser = getStoredUser();
   const learner = isLearnerUser(currentUser);
-  const defaultPath = learner ? 'courses' : 'documents';
+  const admin = isAdminUser(currentUser);
+  const defaultPath = learner ? 'courses' : admin ? 'employees' : 'documents';
 
   return (
     <main className="app-layout">
@@ -31,6 +37,7 @@ export function DashboardPage() {
       <section className="app-content">
         <Routes>
           <Route path="/" element={<Navigate to={defaultPath} replace />} />
+          <Route path="employees" element={admin ? <EmployeesAdminPage /> : <Navigate to={`/app/${defaultPath}`} replace />}/>
           <Route path="documents" element={learner ? <Navigate to="/app/courses" replace /> : <DocumentsPage />} />
           <Route path="courses" element={<CoursesPage />} />
           <Route path="courses/:courseId" element={<CourseDetailPage />} />
@@ -39,14 +46,15 @@ export function DashboardPage() {
           <Route path="chatbot" element={<ChatbotPage />} />
           <Route path="trainer" element={<DialogTrainerPage />} />
           <Route
-            path="analytics"
-            element={
-              <PlaceholderPage
-                title="Аналитика"
-                description="Этот раздел позже будет доработан в рамках общего проекта."
-              />
-            }
-          />
+  path="analytics/tests"
+  element={learner ? <Navigate to="/app/courses" replace /> : <AnalyticsTestsPage />}
+/>
+<Route
+  path="analytics/tests/:testId"
+  element={learner ? <Navigate to="/app/courses" replace /> : <TestAnalyticsDetailPage />}
+/>
+          <Route path="analytics" element={learner ? <Navigate to="/app/courses" replace /> : <AnalyticsEmployeesPage />}/>
+          <Route path="analytics/employees/:employeeId" element={learner ? <Navigate to="/app/courses" replace /> : <EmployeeAnalyticsDetailPage />}/>
           <Route
             path="guide"
             element={

@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
-import { getStoredUser, isLearnerUser } from '../api';
+import { getStoredUser, isAdminUser, isLearnerUser } from '../api';
 
-type SidebarSection = 'documents' | 'courses' | 'tests' | 'analytics' | 'trainer' | 'guide';
+type SidebarSection = 'documents' | 'courses' | 'tests' | 'analytics' | 'trainer' | 'guide' | 'employees';
 
 const allMenuItems: Array<{ key: SidebarSection; label: string; path: string }> = [
   { key: 'documents', label: 'Документы', path: '/app/documents' },
@@ -10,15 +10,25 @@ const allMenuItems: Array<{ key: SidebarSection; label: string; path: string }> 
   { key: 'trainer', label: 'Диалоговый тренажёр', path: '/app/trainer' },
   { key: 'analytics', label: 'Аналитика', path: '/app/analytics' },
   { key: 'guide', label: 'Руководство пользователя', path: '/app/guide' },
+  { key: 'employees', label: 'Сотрудники', path: '/app/employees' },
 ];
 
 export function Sidebar() {
   const currentUser = getStoredUser();
   const learner = isLearnerUser(currentUser);
+  const admin = isAdminUser(currentUser);
 
-  const menuItems = learner
-    ? allMenuItems.filter((item) => item.key !== 'documents')
-    : allMenuItems;
+const menuItems = allMenuItems.filter((item) => {
+  if (learner) {
+    return item.key !== 'documents' && item.key !== 'analytics' && item.key !== 'employees';
+  }
+
+  if (!admin && item.key === 'employees') {
+    return false;
+  }
+
+  return true;
+});
 
   return (
     <aside className="sidebar">

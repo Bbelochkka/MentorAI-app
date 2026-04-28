@@ -53,6 +53,9 @@ export function getStoredUser(): UserDto | null {
 export function isLearnerUser(user: UserDto | null): boolean {
   return user?.role === 'employer';
 }
+export function isAdminUser(user: UserDto | null): boolean {
+  return user?.role === 'admin';
+}
 
 async function parseError(response: Response): Promise<Error> {
   const error = await response
@@ -578,6 +581,123 @@ export async function getAttemptResult(attemptId: number): Promise<TestAttemptRe
 
   return response.json();
 }
+export interface AdminUserListItemDto {
+  id: number;
+  full_name: string;
+  email: string;
+  role: string;
+  role_label: string;
+  hire_date?: string | null;
+  job_title?: string | null;
+  department?: string | null;
+  supervisor_id?: number | null;
+  supervisor_name?: string | null;
+}
+
+export interface AdminUserListResponse {
+  items: AdminUserListItemDto[];
+}
+
+export interface SupervisorOptionDto {
+  id: number;
+  full_name: string;
+  department?: string | null;
+}
+
+export interface SupervisorOptionsResponse {
+  items: SupervisorOptionDto[];
+}
+
+export interface CreateUserPayload {
+  full_name: string;
+  email: string;
+  password: string;
+  role: 'employer' | 'manager';
+  hire_date: string;
+  job_title: string;
+  department: string;
+  supervisor_id?: number | null;
+}
+
+export interface UpdateUserPayload {
+  full_name: string;
+  email: string;
+  password?: string;
+  role: 'employer' | 'manager';
+  hire_date: string;
+  job_title: string;
+  department: string;
+  supervisor_id?: number | null;
+}
+
+export async function getAdminUsers(): Promise<AdminUserListItemDto[]> {
+  const response = await authorizedFetch(`${API_URL}/api/users`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  const data: AdminUserListResponse = await response.json();
+  return data.items;
+}
+
+export async function getSupervisorOptions(): Promise<SupervisorOptionDto[]> {
+  const response = await authorizedFetch(`${API_URL}/api/users/supervisors`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  const data: SupervisorOptionsResponse = await response.json();
+  return data.items;
+}
+
+export async function createAdminUser(payload: CreateUserPayload): Promise<AdminUserListItemDto> {
+  const response = await authorizedFetch(`${API_URL}/api/users`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function updateAdminUser(
+  userId: number,
+  payload: UpdateUserPayload
+): Promise<AdminUserListItemDto> {
+  const response = await authorizedFetch(`${API_URL}/api/users/${userId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+export async function deleteAdminUser(userId: number): Promise<{ message: string }> {
+  const response = await authorizedFetch(`${API_URL}/api/users/${userId}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
 export interface ChatbotAskPayload {
   query: string;
 }
@@ -660,4 +780,145 @@ export async function sendChatbotMessage(
 
   return response.json();
 }
+
+export type AnalyticsEmployeeSort = 'hire_date' | 'adaptation' | 'correct_answers';
+
+export interface AnalyticsEmployeeCardDto {
+  employee_id: number;
+  full_name: string;
+  email: string;
+  hire_date: string;
+  role_label: string;
+  adaptation_index: number;
+  material_progress_percent: number;
+  tests_completed_percent: number;
+  correct_answers_percent: number;
+  dialog_score_percent: number;
+}
+
+export interface AnalyticsEmployeeListResponse {
+  items: AnalyticsEmployeeCardDto[];
+}
+
+export interface AnalyticsCourseResultDto {
+  course_id: number;
+  course_title: string;
+  correct_answers_percent: number;
+}
+
+export interface AnalyticsTypicalErrorDto {
+  question_id: number;
+  question_text: string;
+  course_title: string;
+  wrong_answers: number;
+  total_answers: number;
+  error_rate: number;
+}
+
+export interface AnalyticsEmployeeDetailDto {
+  employee: AnalyticsEmployeeCardDto;
+  completed_tests_count: number;
+  completed_dialogs_count: number;
+  course_results: AnalyticsCourseResultDto[];
+  typical_errors: AnalyticsTypicalErrorDto[];
+}
+
+export async function getAnalyticsEmployees(
+  search = '',
+  sort: AnalyticsEmployeeSort = 'hire_date'
+): Promise<AnalyticsEmployeeCardDto[]> {
+  const params = new URLSearchParams();
+  if (search.trim()) {
+    params.set('search', search.trim());
+  }
+  params.set('sort', sort);
+
+  const response = await authorizedFetch(`${API_URL}/api/analytics/employees?${params.toString()}`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  const data: AnalyticsEmployeeListResponse = await response.json();
+  return data.items;
+}
+
+export async function getAnalyticsEmployeeDetail(
+  employeeId: number
+): Promise<AnalyticsEmployeeDetailDto> {
+  const response = await authorizedFetch(`${API_URL}/api/analytics/employees/${employeeId}`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+export interface AnalyticsTestCardDto {
+  test_id: number;
+  title: string;
+  course_id: number;
+  course_title: string;
+  question_count: number;
+  attempts_count: number;
+  unique_employees_count: number;
+  avg_best_percent: number;
+}
+
+export interface AnalyticsTestListResponse {
+  items: AnalyticsTestCardDto[];
+}
+
+export interface AnalyticsTestParticipantDto {
+  employee_id: number;
+  full_name: string;
+  email: string;
+  best_percent: number;
+  attempts_count: number;
+  last_completed_at?: string | null;
+}
+
+export interface AnalyticsTestTopErrorDto {
+  question_id: number;
+  question_text: string;
+  wrong_answers: number;
+  total_answers: number;
+  error_rate: number;
+}
+
+export interface AnalyticsTestDetailDto {
+  test_id: number;
+  title: string;
+  course_id: number;
+  course_title: string;
+  question_count: number;
+  attempts_count: number;
+  unique_employees_count: number;
+  avg_best_percent: number;
+  participants: AnalyticsTestParticipantDto[];
+  top_errors: AnalyticsTestTopErrorDto[];
+}
+
+export async function getAnalyticsTests(): Promise<AnalyticsTestCardDto[]> {
+  const response = await authorizedFetch(`${API_URL}/api/analytics/tests`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  const data: AnalyticsTestListResponse = await response.json();
+  return data.items;
+}
+
+export async function getAnalyticsTestDetail(testId: number): Promise<AnalyticsTestDetailDto> {
+  const response = await authorizedFetch(`${API_URL}/api/analytics/tests/${testId}`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
+
+
 
