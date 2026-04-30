@@ -15,6 +15,7 @@ import { EmployeeAnalyticsDetailPage } from './EmployeeAnalyticsDetailPage';
 import { AnalyticsTestsPage } from './AnalyticsTestsPage';
 import { TestAnalyticsDetailPage } from './TestAnalyticsDetailPage';
 import { MyAnalyticsPage } from './MyAnalyticsPage';
+import { GuidePage } from './GuidePage';
 
 function PlaceholderPage({ title, description }: { title: string; description: string }) {
   return (
@@ -79,6 +80,7 @@ export function DashboardPage() {
             path="trainer"
             element={admin ? <Navigate to={fallbackPath} replace /> : <DialogTrainerPage />}
           />
+          <Route path="guide" element={<GuidePage />} />
 
           <Route
             path="analytics/tests"
