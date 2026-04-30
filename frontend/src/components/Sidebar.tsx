@@ -6,6 +6,7 @@ type SidebarSection =
   | 'courses'
   | 'tests'
   | 'analytics'
+  | 'myAnalytics'
   | 'trainer'
   | 'guide'
   | 'employees';
@@ -14,10 +15,12 @@ const allMenuItems: Array<{ key: SidebarSection; label: string; path: string }> 
   { key: 'documents', label: 'Документы', path: '/app/documents' },
   { key: 'courses', label: 'Курсы', path: '/app/courses' },
   { key: 'tests', label: 'Тесты', path: '/app/tests' },
+  { key: 'myAnalytics', label: 'Моя аналитика', path: '/app/my-analytics' },
   { key: 'trainer', label: 'Диалоговый тренажёр', path: '/app/trainer' },
   { key: 'analytics', label: 'Аналитика', path: '/app/analytics' },
   { key: 'guide', label: 'Руководство пользователя', path: '/app/guide' },
   { key: 'employees', label: 'Сотрудники', path: '/app/employees' },
+  
 ];
 
 export function Sidebar() {
@@ -26,16 +29,22 @@ export function Sidebar() {
   const admin = isAdminUser(currentUser);
 
   const menuItems = allMenuItems.filter((item) => {
-    if (admin) {
-      return item.key === 'employees';
-    }
+  if (admin) {
+    return item.key === 'employees';
+  }
 
-    if (learner) {
-      return item.key !== 'documents' && item.key !== 'analytics' && item.key !== 'employees';
-    }
+  if (learner) {
+    return (
+      item.key === 'courses' ||
+      item.key === 'tests' ||
+      item.key === 'myAnalytics' ||
+      item.key === 'trainer' ||
+      item.key === 'guide'
+    );
+  }
 
-    return item.key !== 'employees';
-  });
+  return item.key !== 'employees' && item.key !== 'myAnalytics';
+});
 
   return (
     <aside className="sidebar">

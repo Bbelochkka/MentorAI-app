@@ -14,6 +14,7 @@ import { AnalyticsEmployeesPage } from './AnalyticsEmployeesPage';
 import { EmployeeAnalyticsDetailPage } from './EmployeeAnalyticsDetailPage';
 import { AnalyticsTestsPage } from './AnalyticsTestsPage';
 import { TestAnalyticsDetailPage } from './TestAnalyticsDetailPage';
+import { MyAnalyticsPage } from './MyAnalyticsPage';
 
 function PlaceholderPage({ title, description }: { title: string; description: string }) {
   return (
@@ -85,6 +86,16 @@ export function DashboardPage() {
               learner || admin ? <Navigate to={fallbackPath} replace /> : <AnalyticsTestsPage />
             }
           />
+          <Route
+  path="my-analytics"
+  element={
+    learner ? (
+      <MyAnalyticsPage />
+    ) : (
+      <Navigate to="/app/analytics" replace />
+    )
+  }
+/>
 
           <Route
             path="analytics/tests/:testId"
@@ -94,11 +105,15 @@ export function DashboardPage() {
           />
 
           <Route
-            path="analytics"
-            element={
-              learner || admin ? <Navigate to={fallbackPath} replace /> : <AnalyticsEmployeesPage />
-            }
-          />
+  path="analytics"
+  element={
+    learner ? (
+      <Navigate to="/app/my-analytics" replace />
+    ) : (
+      <AnalyticsEmployeesPage />
+    )
+  }
+/>
 
           <Route
             path="analytics/employees/:employeeId"

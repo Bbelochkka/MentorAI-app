@@ -854,6 +854,15 @@ export async function getAnalyticsEmployeeDetail(
 
   return response.json();
 }
+export async function getMyAnalytics(): Promise<AnalyticsEmployeeDetailDto> {
+  const response = await authorizedFetch(`${API_URL}/api/analytics/me`);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+
+  return response.json();
+}
 export interface AnalyticsTestCardDto {
   test_id: number;
   title: string;

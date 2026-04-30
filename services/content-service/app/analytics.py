@@ -474,7 +474,7 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
 # to "/tests". It specifies that the response should be formatted according to the
 # `AnalyticsTestListResponse` model. This means that the response data will be validated against the
 # specified model before being returned to the client.
-@router.get("/tests", response_model=AnalyticsTestListResponse)
+
 
 def fetch_course_results(company_id: int, employee_id: int) -> list[AnalyticsCourseResultResponse]:
     query = """
@@ -659,7 +659,8 @@ def fetch_test_cards(company_id: int) -> list[AnalyticsTestCardResponse]:
         )
         for row in rows
     ]
-
+    
+@router.get("/tests", response_model=AnalyticsTestListResponse)
 def list_test_analytics(
     current_user: dict = Depends(get_current_user),
 ) -> AnalyticsTestListResponse:
@@ -726,3 +727,36 @@ def get_employee_analytics_detail(
         typical_errors=fetch_typical_errors(current_user["company_id"], employee_id),
     )
     
+@router.get("/me", response_model=AnalyticsEmployeeDetailResponse)
+def get_my_analytics(
+    current_user: dict = Depends(get_current_user),
+) -> AnalyticsEmployeeDetailResponse:
+    if current_user.get("role") != "employer":
+        raise HTTPException(
+            status_code=403,
+            detail="Личная аналитика доступна только стажёру"
+        )
+
+    employee_id = current_user["id"]
+
+    rows = fetch_employee_metric_rows(
+        company_id=current_user["company_id"],
+        search=None,
+        sort="hire_date",
+        employee_id=employee_id,
+        supervisor_scope_id=None,
+    )
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Данные аналитики не найдены")
+
+    row = rows[0]
+    employee = build_employee_card(row)
+
+    return AnalyticsEmployeeDetailResponse(
+        employee=employee,
+        completed_tests_count=int(row[10] or 0),
+        completed_dialogs_count=int(row[11] or 0),
+        course_results=fetch_course_results(current_user["company_id"], employee_id),
+        typical_errors=fetch_typical_errors(current_user["company_id"], employee_id),
+    )
