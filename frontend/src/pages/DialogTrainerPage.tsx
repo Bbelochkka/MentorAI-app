@@ -559,6 +559,21 @@ export function DialogTrainerPage() {
 
   const completedDialogs = sessions.filter((item) => item.status === 'completed').length;
 
+  const currentStageTitle = activeSession
+  ? STAGE_TITLES[activeSession.current_stage] || activeSession.current_stage
+  : '';
+
+const sessionHeader = activeSession
+  ? [
+      modeTitle(activeSession.mode),
+      activeSession.scenario_title !== currentStageTitle ? activeSession.scenario_title : null,
+      currentStageTitle,
+      difficultyTitle(options, activeSession.difficulty),
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join(' · ')
+  : '';
+
   return (
     <section className={`trainer-page ${activeSession ? 'trainer-page--chat' : ''}`}>
       <div className="trainer-shell">
@@ -611,7 +626,7 @@ export function DialogTrainerPage() {
               </button>
               <div className="trainer-chat-meta">
                 <p>
-                  {activeSession.scenario_title} · {STAGE_TITLES[activeSession.current_stage] || activeSession.current_stage} · {difficultyTitle(options, activeSession.difficulty)} · {modeTitle(activeSession.mode)}
+                 {sessionHeader}
                 </p>
               </div>
               <button type="button" className="trainer-primary-btn trainer-primary-btn--small" onClick={() => setIsBriefOpen(true)}>

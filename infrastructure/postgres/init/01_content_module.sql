@@ -244,3 +244,11 @@ SET
     job_title = EXCLUDED.job_title,
     department = EXCLUDED.department,
     supervisor_id = EXCLUDED.supervisor_id;
+
+
+
+SELECT setval(
+    pg_get_serial_sequence('users', 'id'),
+    GREATEST((SELECT COALESCE(MAX(id), 1) FROM users), 3),
+    TRUE
+);
