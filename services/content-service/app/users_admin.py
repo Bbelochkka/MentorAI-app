@@ -184,6 +184,7 @@ def _ensure_email_available(email: str, company_id: int, exclude_user_id: int | 
                     FROM users
                     WHERE lower(email) = lower(%s)
                       AND company_id = %s
+                      AND is_active = TRUE
                     LIMIT 1
                     """,
                     (email, company_id),
@@ -196,6 +197,7 @@ def _ensure_email_available(email: str, company_id: int, exclude_user_id: int | 
                     WHERE lower(email) = lower(%s)
                       AND company_id = %s
                       AND id <> %s
+                      AND is_active = TRUE
                     LIMIT 1
                     """,
                     (email, company_id, exclude_user_id),
@@ -561,14 +563,16 @@ def delete_user(
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                UPDATE users
-                SET is_active = FALSE
-                WHERE id = %s
-                  AND company_id = %s
-                """,
-                (target_user_id, current_user["company_id"]),
-            )
+    """
+    UPDATE users
+    SET is_active = FALSE,
+        email = CONCAT('deleted_', id, '_', email)
+    WHERE id = %s
+      AND company_id = %s
+      AND is_active = TRUE
+    """,
+    (target_user_id, current_user["company_id"]),
+)
         conn.commit()
 
     return {"message": "Пользователь удалён"}

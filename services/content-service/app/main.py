@@ -5,9 +5,9 @@ from uuid import uuid4
 import logging
 from typing import Any
 from minio.error import S3Error
-from .users_admin import router as users_admin_router
+from .users_admin import router as users_admin_router, _ensure_user_management_schema
+from .dialog_trainer import router as dialog_trainer_router, _ensure_trainer_schema
 from .chatbot import router as chatbot_router
-from .dialog_trainer import router as dialog_trainer_router
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from .course_generation import (
@@ -279,7 +279,15 @@ async def lifespan(_: FastAPI):
     try:
         ensure_bucket_exists()
     except Exception:
-        pass
+        logger.exception("Не удалось проверить или создать bucket в MinIO")
+
+    try:
+        _ensure_user_management_schema()
+        _ensure_trainer_schema()
+    except Exception:
+        logger.exception("Не удалось подготовить схему БД для пользователей, тренажёра и аналитики")
+        raise
+
     yield
 
 

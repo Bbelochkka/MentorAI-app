@@ -569,40 +569,6 @@ export function DialogTrainerPage() {
 
         {!activeSession ? (
           <>
-            <div className="trainer-metrics">
-              <div className="trainer-metric-card">
-                <div className="trainer-ring trainer-ring--green"><span>75%</span></div>
-                <div>
-                  <b>Индекс адаптации</b>
-                  <span>+ 10% за прошлый месяц</span>
-                  <small>по диалогам</small>
-                </div>
-              </div>
-              <div className="trainer-metric-card">
-                <div className="trainer-ring trainer-ring--orange"><span>60%</span></div>
-                <div>
-                  <b>Пройдено тестов</b>
-                  <span>+ 10% за прошлый месяц</span>
-                  <small>по учебному плану</small>
-                </div>
-              </div>
-              <div className="trainer-metric-card">
-                <div className="trainer-ring trainer-ring--red"><span>25%</span></div>
-                <div>
-                  <b>Процент правильных ответов</b>
-                  <span>+ 10% за прошлый месяц</span>
-                  <small>по тестам</small>
-                </div>
-              </div>
-              <div className="trainer-metric-card">
-                <div className="trainer-ring trainer-ring--gray"><span>{completedDialogs}</span></div>
-                <div>
-                  <b>Пройдено экзаменов</b>
-                  <span>+ 10% за прошлый месяц</span>
-                  <small>по тренажёру</small>
-                </div>
-              </div>
-            </div>
 
             <div className="trainer-home">
               <h1>Ваша история диалогов:</h1>

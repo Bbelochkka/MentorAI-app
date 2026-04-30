@@ -147,16 +147,20 @@ def fetch_employee_metric_rows(
     search_pattern = f"%{(search or '').strip()}%" if (search or "").strip() else "%"
     sort_sql = SORT_SQL[sort]
 
+    scope_filter_sql = ""
     employee_filter_sql = ""
+
     params: list[object] = [
         company_id,
         company_id,
         company_id,
         company_id,
         search_pattern,
-        supervisor_scope_id,
-        supervisor_scope_id,
     ]
+
+    if supervisor_scope_id is not None:
+        scope_filter_sql = "AND u.supervisor_id = %s"
+        params.append(supervisor_scope_id)
 
     if employee_id is not None:
         employee_filter_sql = "AND u.id = %s"
@@ -253,7 +257,7 @@ def fetch_employee_metric_rows(
       AND u.is_active = TRUE
       AND rl.code = 'employer'
       AND LOWER(u.full_name) LIKE LOWER(%s)
-      AND (%s IS NULL OR u.supervisor_id = %s)
+      {scope_filter_sql}
       {employee_filter_sql}
     ORDER BY {sort_sql}
     """
@@ -261,8 +265,7 @@ def fetch_employee_metric_rows(
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
-            return cur.fetchall()
-
+            return cur.fetchall()  
 
 def fetch_test_participants(company_id: int, test_id: int) -> list[AnalyticsTestParticipantResponse]:
     query = """
@@ -391,11 +394,12 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
             tv.id AS test_version_id
         FROM tests t
         JOIN courses c ON c.id = t.course_id
-        JOIN test_versions tv
+        LEFT JOIN test_versions tv
           ON tv.test_id = t.id
          AND tv.version_number = t.current_version_no
         WHERE t.company_id = %s
           AND t.id = %s
+          AND t.status <> 'archived'
     ),
     question_count AS (
         SELECT
@@ -411,8 +415,8 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
             COUNT(*) AS attempts_count,
             COUNT(DISTINCT ta.user_id) AS unique_employees_count
         FROM test_attempts ta
-        WHERE ta.test_id = %s
-          AND ta.status = 'completed'
+        JOIN current_test_version ctv ON ctv.test_id = ta.test_id
+        WHERE ta.status = 'completed'
         GROUP BY ta.test_id
     ),
     best_attempts AS (
@@ -420,10 +424,10 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
             ta.user_id,
             MAX(ta.percent) AS best_percent
         FROM test_attempts ta
+        JOIN current_test_version ctv ON ctv.test_id = ta.test_id
         JOIN users u ON u.id = ta.user_id
         JOIN roles r ON r.id = u.role_id
-        WHERE ta.test_id = %s
-          AND ta.status = 'completed'
+        WHERE ta.status = 'completed'
           AND r.code = 'employer'
         GROUP BY ta.user_id
     ),
@@ -448,7 +452,7 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
 
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(query, (company_id, test_id, test_id, test_id))
+            cur.execute(query, (company_id, test_id))
             row = cur.fetchone()
 
     if not row:
@@ -466,7 +470,196 @@ def fetch_test_detail(company_id: int, test_id: int) -> AnalyticsTestDetailRespo
         participants=fetch_test_participants(company_id, test_id),
         top_errors=fetch_test_top_errors(company_id, test_id),
     )
+# The above code is using the FastAPI framework in Python to define a route for handling GET requests
+# to "/tests". It specifies that the response should be formatted according to the
+# `AnalyticsTestListResponse` model. This means that the response data will be validated against the
+# specified model before being returned to the client.
 @router.get("/tests", response_model=AnalyticsTestListResponse)
+
+def fetch_course_results(company_id: int, employee_id: int) -> list[AnalyticsCourseResultResponse]:
+    query = """
+    WITH published_tests AS (
+        SELECT
+            t.id AS test_id,
+            t.course_id,
+            c.title AS course_title
+        FROM tests t
+        JOIN courses c ON c.id = t.course_id
+        WHERE t.company_id = %s
+          AND t.status = 'published'
+    ),
+    best_attempts AS (
+        SELECT
+            ta.test_id,
+            MAX(ta.percent) AS best_percent
+        FROM test_attempts ta
+        JOIN published_tests pt ON pt.test_id = ta.test_id
+        WHERE ta.user_id = %s
+          AND ta.status = 'completed'
+        GROUP BY ta.test_id
+    )
+    SELECT
+        pt.course_id,
+        pt.course_title,
+        ROUND(COALESCE(AVG(ba.best_percent), 0)::numeric, 2) AS correct_answers_percent
+    FROM published_tests pt
+    LEFT JOIN best_attempts ba ON ba.test_id = pt.test_id
+    GROUP BY pt.course_id, pt.course_title
+    ORDER BY pt.course_title ASC
+    """
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (company_id, employee_id))
+            rows = cur.fetchall()
+
+    return [
+        AnalyticsCourseResultResponse(
+            course_id=row[0],
+            course_title=row[1],
+            correct_answers_percent=float(row[2] or 0),
+        )
+        for row in rows
+    ]
+
+
+def fetch_typical_errors(company_id: int, employee_id: int) -> list[AnalyticsTypicalErrorResponse]:
+    query = """
+    SELECT
+        q.id,
+        q.question_text,
+        c.title AS course_title,
+        COUNT(*) FILTER (WHERE COALESCE(qr.is_correct, FALSE) = FALSE) AS wrong_answers,
+        COUNT(*) AS total_answers,
+        ROUND(
+            (
+                COUNT(*) FILTER (WHERE COALESCE(qr.is_correct, FALSE) = FALSE) * 100.0
+                / NULLIF(COUNT(*), 0)
+            )::numeric,
+            2
+        ) AS error_rate
+    FROM question_responses qr
+    JOIN test_attempts ta ON ta.id = qr.attempt_id
+    JOIN questions q ON q.id = qr.question_id
+    JOIN tests t ON t.id = ta.test_id
+    JOIN courses c ON c.id = t.course_id
+    WHERE ta.user_id = %s
+      AND ta.status = 'completed'
+      AND t.company_id = %s
+    GROUP BY q.id, q.question_text, c.title
+    HAVING COUNT(*) FILTER (WHERE COALESCE(qr.is_correct, FALSE) = FALSE) > 0
+    ORDER BY error_rate DESC, wrong_answers DESC, q.id DESC
+    LIMIT 5
+    """
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (employee_id, company_id))
+            rows = cur.fetchall()
+
+    return [
+        AnalyticsTypicalErrorResponse(
+            question_id=row[0],
+            question_text=row[1],
+            course_title=row[2],
+            wrong_answers=int(row[3] or 0),
+            total_answers=int(row[4] or 0),
+            error_rate=float(row[5] or 0),
+        )
+        for row in rows
+    ]
+
+
+def fetch_test_cards(company_id: int) -> list[AnalyticsTestCardResponse]:
+    query = """
+    WITH current_test_versions AS (
+        SELECT
+            t.id AS test_id,
+            t.title,
+            t.course_id,
+            c.title AS course_title,
+            tv.id AS test_version_id
+        FROM tests t
+        JOIN courses c ON c.id = t.course_id
+        LEFT JOIN test_versions tv
+          ON tv.test_id = t.id
+         AND tv.version_number = t.current_version_no
+        WHERE t.company_id = %s
+          AND t.status <> 'archived'
+    ),
+    question_counts AS (
+        SELECT
+            ctv.test_id,
+            COUNT(q.id) AS question_count
+        FROM current_test_versions ctv
+        LEFT JOIN questions q ON q.test_version_id = ctv.test_version_id
+        GROUP BY ctv.test_id
+    ),
+    attempts_agg AS (
+        SELECT
+            ta.test_id,
+            COUNT(*) AS attempts_count,
+            COUNT(DISTINCT ta.user_id) AS unique_employees_count
+        FROM test_attempts ta
+        JOIN current_test_versions ctv ON ctv.test_id = ta.test_id
+        WHERE ta.status = 'completed'
+        GROUP BY ta.test_id
+    ),
+    best_attempts AS (
+        SELECT
+            ta.test_id,
+            ta.user_id,
+            MAX(ta.percent) AS best_percent
+        FROM test_attempts ta
+        JOIN current_test_versions ctv ON ctv.test_id = ta.test_id
+        JOIN users u ON u.id = ta.user_id
+        JOIN roles r ON r.id = u.role_id
+        WHERE ta.status = 'completed'
+          AND r.code = 'employer'
+        GROUP BY ta.test_id, ta.user_id
+    ),
+    avg_best AS (
+        SELECT
+            test_id,
+            ROUND(COALESCE(AVG(best_percent), 0)::numeric, 2) AS avg_best_percent
+        FROM best_attempts
+        GROUP BY test_id
+    )
+    SELECT
+        ctv.test_id,
+        ctv.title,
+        ctv.course_id,
+        ctv.course_title,
+        COALESCE(qc.question_count, 0) AS question_count,
+        COALESCE(aa.attempts_count, 0) AS attempts_count,
+        COALESCE(aa.unique_employees_count, 0) AS unique_employees_count,
+        COALESCE(ab.avg_best_percent, 0) AS avg_best_percent
+    FROM current_test_versions ctv
+    LEFT JOIN question_counts qc ON qc.test_id = ctv.test_id
+    LEFT JOIN attempts_agg aa ON aa.test_id = ctv.test_id
+    LEFT JOIN avg_best ab ON ab.test_id = ctv.test_id
+    ORDER BY ctv.test_id DESC
+    """
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (company_id,))
+            rows = cur.fetchall()
+
+    return [
+        AnalyticsTestCardResponse(
+            test_id=row[0],
+            title=row[1],
+            course_id=row[2],
+            course_title=row[3],
+            question_count=int(row[4] or 0),
+            attempts_count=int(row[5] or 0),
+            unique_employees_count=int(row[6] or 0),
+            avg_best_percent=float(row[7] or 0),
+        )
+        for row in rows
+    ]
+
 def list_test_analytics(
     current_user: dict = Depends(get_current_user),
 ) -> AnalyticsTestListResponse:
@@ -495,10 +688,11 @@ def list_employee_analytics(
     require_manager_user(current_user)
 
     rows = fetch_employee_metric_rows(
-        company_id=current_user["company_id"],
-        search=search,
-        sort=sort,
-    )
+    company_id=current_user["company_id"],
+    search=search,
+    sort=sort,
+    supervisor_scope_id=get_supervisor_scope(current_user),
+)
 
     return AnalyticsEmployeeListResponse(items=[build_employee_card(row) for row in rows])
 
@@ -511,11 +705,12 @@ def get_employee_analytics_detail(
     require_manager_user(current_user)
 
     rows = fetch_employee_metric_rows(
-        company_id=current_user["company_id"],
-        search=None,
-        sort="hire_date",
-        employee_id=employee_id,
-    )
+    company_id=current_user["company_id"],
+    search=None,
+    sort="hire_date",
+    employee_id=employee_id,
+    supervisor_scope_id=get_supervisor_scope(current_user),
+)
 
     if not rows:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")

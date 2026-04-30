@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    hire_date DATE,
+    job_title VARCHAR(255),
+    department VARCHAR(255),
+    supervisor_id BIGINT REFERENCES users(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -175,8 +179,68 @@ INSERT INTO roles (id, code) VALUES
     (3, 'admin')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO users (id, company_id, role_id, full_name, email, password_hash)
+INSERT INTO users (
+    id,
+    company_id,
+    role_id,
+    full_name,
+    email,
+    password_hash,
+    is_active,
+    hire_date,
+    job_title,
+    department,
+    supervisor_id
+)
 VALUES
-    (1, 1, 2, 'Алёна', 'aoanuchina@hse.edu.ru', 'pbkdf2_sha256$260000$f75600dfc248c47f3cad42f4ff9ceeae$198a838deef3d9ff1e39a759e36bee61587f8cae7aeb0e82fcfc9362aeae6270'),
-    (2, 1, 1, 'Стажёр', 'trainee@mentorai.local', 'pbkdf2_sha256$260000$14df469ff9465bdc97312bd58a35458f$62797760ec7d4d00af317c445205e50ca813a4f7c9b1034801ca7013a1b3e745')
-ON CONFLICT (id) DO NOTHING;
+    (
+        1,
+        1,
+        2,
+        'Анучина Алёна Олеговна',
+        'aoanuchina@hse.edu.ru',
+        'pbkdf2_sha256$260000$f75600dfc248c47f3cad42f4ff9ceeae$198a838deef3d9ff1e39a759e36bee61587f8cae7aeb0e82fcfc9362aeae6270',
+        TRUE,
+        CURRENT_DATE,
+        'Руководитель отдела продаж',
+        'Отдел продаж',
+        NULL
+    ),
+    (
+        2,
+        1,
+        1,
+        'Попов Арсений Александрович',
+        'trainee@mentorai.local',
+        'pbkdf2_sha256$260000$14df469ff9465bdc97312bd58a35458f$62797760ec7d4d00af317c445205e50ca813a4f7c9b1034801ca7013a1b3e745',
+        TRUE,
+        CURRENT_DATE,
+        'Менеджер по продажам',
+        'Отдел продаж',
+        1
+    ),
+    (
+        3,
+        1,
+        3,
+        'Администратор',
+        'admin@mentorai.com',
+        'pbkdf2_sha256$260000$f75600dfc248c47f3cad42f4ff9ceeae$198a838deef3d9ff1e39a759e36bee61587f8cae7aeb0e82fcfc9362aeae6270',
+        TRUE,
+        CURRENT_DATE,
+        'Администратор системы',
+        'Администрирование',
+        NULL
+    )
+ON CONFLICT (id) DO UPDATE
+SET
+    company_id = EXCLUDED.company_id,
+    role_id = EXCLUDED.role_id,
+    full_name = EXCLUDED.full_name,
+    email = EXCLUDED.email,
+    password_hash = EXCLUDED.password_hash,
+    is_active = EXCLUDED.is_active,
+    hire_date = EXCLUDED.hire_date,
+    job_title = EXCLUDED.job_title,
+    department = EXCLUDED.department,
+    supervisor_id = EXCLUDED.supervisor_id;

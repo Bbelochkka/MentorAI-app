@@ -1,7 +1,14 @@
 import { NavLink } from 'react-router-dom';
 import { getStoredUser, isAdminUser, isLearnerUser } from '../api';
 
-type SidebarSection = 'documents' | 'courses' | 'tests' | 'analytics' | 'trainer' | 'guide' | 'employees';
+type SidebarSection =
+  | 'documents'
+  | 'courses'
+  | 'tests'
+  | 'analytics'
+  | 'trainer'
+  | 'guide'
+  | 'employees';
 
 const allMenuItems: Array<{ key: SidebarSection; label: string; path: string }> = [
   { key: 'documents', label: 'Документы', path: '/app/documents' },
@@ -18,25 +25,25 @@ export function Sidebar() {
   const learner = isLearnerUser(currentUser);
   const admin = isAdminUser(currentUser);
 
-const menuItems = allMenuItems.filter((item) => {
-  if (learner) {
-    return item.key !== 'documents' && item.key !== 'analytics' && item.key !== 'employees';
-  }
+  const menuItems = allMenuItems.filter((item) => {
+    if (admin) {
+      return item.key === 'employees';
+    }
 
-  if (!admin && item.key === 'employees') {
-    return false;
-  }
+    if (learner) {
+      return item.key !== 'documents' && item.key !== 'analytics' && item.key !== 'employees';
+    }
 
-  return true;
-});
+    return item.key !== 'employees';
+  });
 
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        <div className="brand sidebar-brand">
+        <NavLink to="/app" className="brand sidebar-brand" aria-label="Перейти на главный экран">
           <span className="brand__mentor">Mentor</span>
           <span className="brand__ai">AI</span>
-        </div>
+        </NavLink>
 
         <nav className="sidebar-nav" aria-label="Основное меню">
           {menuItems.map((item) => (
@@ -52,12 +59,17 @@ const menuItems = allMenuItems.filter((item) => {
         </nav>
       </div>
 
-      <div className="sidebar-bottom">
-        <NavLink to="/app/chatbot" className={({ isActive }) => `chatbot-shortcut ${isActive ? 'active' : ''}`}>
-          <span className="chatbot-shortcut__icon" />
-          <span>Чат-бот</span>
-        </NavLink>
-      </div>
+      {!admin ? (
+        <div className="sidebar-bottom">
+          <NavLink
+            to="/app/chatbot"
+            className={({ isActive }) => `chatbot-shortcut ${isActive ? 'active' : ''}`}
+          >
+            <span className="chatbot-shortcut__icon" />
+            <span>Чат-бот</span>
+          </NavLink>
+        </div>
+      ) : null}
     </aside>
   );
 }
