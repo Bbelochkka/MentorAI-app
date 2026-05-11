@@ -96,6 +96,59 @@ _NOT_FOUND_MESSAGE = (
     "Я не нашёл точного ответа на этот вопрос в материалах курса. "
     "Попробуй уточнить формулировку или спросить про конкретный продукт, тариф, этап продажи, правило CRM или действие менеджера."
 )
+def _force_text(value: Any) -> str:
+    """
+    Безопасно превращает любое значение в строку.
+    Нужно, потому что иногда из БД/контекста прилетает не строка,
+    а dict/list/tuple, и re.sub/re.findall падают с TypeError.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+
+    if isinstance(value, dict):
+        preferred_keys = (
+            "text",
+            "chunk_text",
+            "content",
+            "raw_text",
+            "description",
+            "title",
+            "message_text",
+            "answer_text",
+        )
+
+        parts: list[str] = []
+
+        for key in preferred_keys:
+            if key in value:
+                text = _force_text(value.get(key))
+                if text:
+                    parts.append(text)
+
+        for key, item in value.items():
+            if key in preferred_keys:
+                continue
+
+            text = _force_text(item)
+            if text:
+                parts.append(text)
+
+        return "\n".join(parts)
+
+    if isinstance(value, (list, tuple, set)):
+        return "\n".join(
+            text
+            for text in (_force_text(item) for item in value)
+            if text
+        )
+
+    return str(value)
 
 _RU_VOWELS = "аеёиоуыэюя"
 _EN_VOWELS = "aeiouy"
@@ -121,6 +174,7 @@ def _normalize_token(token: str) -> str:
 
 
 def _tokenize(text: str) -> list[str]:
+    text = _force_text(text)
     tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9\-]+", text.lower())
     result: list[str] = []
     for token in tokens:
@@ -199,6 +253,7 @@ def _looks_like_gibberish(text: str) -> bool:
 
 
 def _extract_query_focus(query: str) -> str:
+    query = _force_text(query)
     """Возвращает смысловой объект вопроса: например, из 'что такое черная дыра' -> 'черная дыра'."""
     focus = re.sub(r"\s+", " ", query.strip().lower().replace("ё", "е"))
     focus = re.sub(
@@ -219,6 +274,8 @@ def _is_definition_question(query: str) -> bool:
 
 
 def _score_text(query: str, text: str) -> float:
+    query = _force_text(query)
+    text = _force_text(text)
     query_clean = re.sub(r"\s+", " ", query.strip().lower().replace("ё", "е"))
     text_clean = re.sub(r"\s+", " ", text.lower().replace("ё", "е"))
     query_tokens = _tokenize(query)
@@ -370,6 +427,7 @@ def _looks_like_toc_or_heading_list(text: str) -> bool:
 
 
 def _clean_context_text(text: str) -> str:
+    text = _force_text(text)
     text = re.sub(r"\[\[.*?\]\]", "", text)
     text = re.sub(r"(^|\n)\s*Источник\s*:.*?(?=\n|$)", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"^\s*\|\s*[-:]+\s*\|\s*$", "", text, flags=re.MULTILINE)
@@ -395,6 +453,7 @@ def _clean_context_text(text: str) -> str:
     return cleaned.strip()
 
 def _sentences(text: str) -> list[str]:
+    text = _force_text(text)
     prepared = re.sub(r"\s+", " ", text.replace("\n", ". ")).strip()
     if not prepared:
         return []
@@ -730,18 +789,22 @@ def _generate_answer_with_llm(question: str, context_sections: list[dict[str, An
         if _is_definition_question(question)
         else "Сначала дай прямой ответ на вопрос, затем кратко поясни детали. "
     )
+    system_prompt = """
+Ты чат-бот корпоративной обучающей платформы.
 
-    system_prompt = (
-        "Ты ИИ-ассистент MentorAI для обучения менеджеров. "
-        "Отвечай строго на вопрос пользователя и только по переданным материалам курса. "
-        "Не используй внешние знания и не придумывай факты, цифры, тарифы, этапы, роли или условия. "
-        "Не называй документы, файлы и фрагменты. Не пиши слово 'источник'. "
-        "Не пересказывай оглавление, названия разделов и соседние темы. "
-        "Если точного ответа нет в материалах курса, прямо скажи, что точной информации в материалах нет. "
-        "Стиль: естественный, цельный текст, без канцелярита и без набора тезисов. "
-        + answer_shape +
-        "Обычно пиши 1-3 коротких абзаца. Список используй только если пользователь явно просит список."
-    )
+Отвечай только по переданным материалам выбранного курса.
+Если в контексте нет ответа, честно скажи:
+«Я не нашёл точного ответа на этот вопрос в материалах курса».
+
+Строгие правила:
+1. Не используй знания из других курсов.
+2. Не придумывай факты, цены, адреса, условия, характеристики и правила.
+3. Не пиши, что информация взята из документа или фрагмента.
+4. Не упоминай технический контекст, chunks, RAG, источники и базу данных.
+5. Отвечай кратко, по делу, человеческим языком.
+6. Если вопрос не относится к выбранному курсу, скажи, что в материалах курса нет точного ответа.
+""".strip()
+
 
     prompt = f"""
 Вопрос пользователя:
@@ -878,6 +941,135 @@ def _load_course_titles_by_document(company_id: int, document_ids: list[int]) ->
             result[document_id].append(title)
     return dict(result)
 
+def _load_course_document_map(company_id: int) -> tuple[dict[int, list[int]], dict[int, str]]:
+    """
+    Возвращает связь:
+    document_id -> [course_id]
+    course_id -> course_title
+
+    Нужно, чтобы чат-бот сначала определял подходящий курс,
+    а не смешивал документы из всех курсов компании.
+    """
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    cdl.document_id,
+                    c.id AS course_id,
+                    c.title AS course_title
+                FROM course_document_links cdl
+                JOIN courses c ON c.id = cdl.course_id
+                WHERE c.company_id = %s
+                  AND c.status <> 'archived'
+
+                UNION
+
+                SELECT
+                    cv.generated_from_document_id AS document_id,
+                    c.id AS course_id,
+                    c.title AS course_title
+                FROM course_versions cv
+                JOIN courses c ON c.id = cv.course_id
+                WHERE c.company_id = %s
+                  AND c.status <> 'archived'
+                  AND cv.generated_from_document_id IS NOT NULL
+                """,
+                (company_id, company_id),
+            )
+            rows = cur.fetchall()
+
+    document_to_courses: dict[int, list[int]] = defaultdict(list)
+    course_titles: dict[int, str] = {}
+
+    for document_id, course_id, course_title in rows:
+        if document_id is None or course_id is None:
+            continue
+
+        document_id = int(document_id)
+        course_id = int(course_id)
+
+        if course_id not in document_to_courses[document_id]:
+            document_to_courses[document_id].append(course_id)
+
+        course_titles[course_id] = course_title
+
+    return document_to_courses, course_titles
+
+
+def _choose_best_course_ids(
+    query: str,
+    passages: list[dict[str, Any]],
+    document_to_courses: dict[int, list[int]],
+    course_titles: dict[int, str],
+) -> list[int]:
+    """
+    Автоматически выбирает самый подходящий курс по вопросу пользователя.
+
+    Логика:
+    1. Смотрим, какие фрагменты документов лучше всего совпали с вопросом.
+    2. Через course_document_links понимаем, к каким курсам относятся эти документы.
+    3. Выбираем 1 курс, иногда 2 курса, если второй почти такой же релевантный.
+    """
+    per_course_scores: dict[int, list[float]] = defaultdict(list)
+
+    for item in passages:
+        document_id = int(item["document_id"])
+        score = float(item.get("score") or 0)
+
+        for course_id in document_to_courses.get(document_id, []):
+            per_course_scores[course_id].append(score)
+
+    if not per_course_scores:
+        return []
+
+    ranked: list[tuple[int, float]] = []
+
+    for course_id, scores in per_course_scores.items():
+        scores = sorted(scores, reverse=True)
+
+        title_score = _score_text(query, course_titles.get(course_id, ""))
+        final_score = scores[0] + sum(scores[:4]) * 0.15 + title_score * 0.35
+
+        ranked.append((course_id, final_score))
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+
+    best_course_id, best_score = ranked[0]
+
+    if best_score <= 0:
+        return []
+
+    selected = [best_course_id]
+
+    # Второй курс берем только если он реально близок по смыслу.
+    for course_id, score in ranked[1:]:
+        if len(selected) >= 2:
+            break
+
+        if score >= best_score * 0.85 and score >= 12.0:
+            selected.append(course_id)
+
+    return selected
+
+
+def _course_titles_for_document(
+    document_id: int,
+    document_to_courses: dict[int, list[int]],
+    course_titles: dict[int, str],
+    selected_course_ids: list[int],
+) -> list[str]:
+    course_ids = document_to_courses.get(document_id, [])
+
+    if selected_course_ids:
+        allowed = set(selected_course_ids)
+        course_ids = [course_id for course_id in course_ids if course_id in allowed]
+
+    return [
+        course_titles[course_id]
+        for course_id in course_ids
+        if course_id in course_titles
+    ]
 
 def _make_course_source(
     document_id: int,
@@ -896,114 +1088,137 @@ def _make_course_source(
         chunk_id=chunk_id,
         relevance_score=round(score, 2),
     )
+   
 
+def _build_context(
+    company_id: int,
+    query: str,
+) -> tuple[list[dict[str, Any]], list[ChatbotSourceResponse], float]:
+    """
+    Строит контекст для чат-бота.
 
-def _build_context(company_id: int, query: str) -> tuple[list[dict[str, Any]], list[ChatbotSourceResponse], float]:
+    Исправленная логика:
+    1. Загружаем документы компании.
+    2. Считаем релевантность фрагментов.
+    3. По связям document -> course определяем самый подходящий курс.
+    4. Оставляем фрагменты только из выбранного курса/курсов.
+    5. Только этот очищенный контекст отправляем в LLM.
+    """
     documents = _load_processed_documents(company_id)
-    if not documents:
-        raise HTTPException(
-            status_code=400,
-            detail="Сначала загрузи и обработай хотя бы один документ. Бот отвечает только по обработанным материалам курса.",
-        )
 
     passages: list[dict[str, Any]] = []
-    low_value_passages: list[dict[str, Any]] = []
 
-    for doc in documents:
-        source_chunks: list[dict[str, Any]] = []
-        if doc["chunks"]:
-            source_chunks = [
-                {
-                    "chunk_id": chunk["chunk_id"],
-                    "chunk_index": chunk["chunk_index"] or index,
-                    "text": chunk["text"] or "",
-                }
-                for index, chunk in enumerate(doc["chunks"], start=1)
-            ]
-        else:
-            source_chunks = [
-                {"chunk_id": None, "chunk_index": index, "text": passage}
-                for index, passage in enumerate(_split_document_into_passages(doc["raw_text"] or ""), start=1)
-            ]
+    for document in documents:
+        document_passages = document["chunks"] or _split_document_into_passages(
+            document["raw_text"] or ""
+        )
 
-        for chunk in source_chunks:
-            raw_text = chunk["text"] or ""
-            cleaned = _clean_context_text(raw_text)
+        for index, passage in enumerate(document_passages):
+            cleaned = _clean_context_text(passage)
+
             if not cleaned:
                 continue
 
-            item = {
-                "document_id": doc["id"],
-                "document_title": doc["title"],
-                "chunk_id": chunk["chunk_id"],
-                "chunk_index": chunk["chunk_index"],
-                "text": cleaned,
-                "score": _score_text(query, cleaned),
-            }
+            score = _score_text(query, cleaned)
 
-            if _looks_like_toc_or_heading_list(raw_text) or _looks_like_toc_or_heading_list(cleaned):
-                low_value_passages.append(item)
-                continue
-            passages.append(item)
-
-    if not passages and low_value_passages:
-        # Фолбэк только на случай, если документ реально состоит из очень коротких блоков.
-        passages = low_value_passages
+            passages.append(
+                {
+                    "document_id": document["id"],
+                    "document_title": document["title"],
+                    "chunk_id": None if document["chunks"] else index,
+                    "text": cleaned,
+                    "score": score,
+                }
+            )
 
     if not passages:
-        raise HTTPException(status_code=400, detail="Обработанные материалы есть, но в них нет текста для поиска ответа.")
+        return [], [], 0.0
 
     passages.sort(key=lambda item: item["score"], reverse=True)
-    best_score = float(passages[0]["score"])
 
     meaningful = [item for item in passages if item["score"] > 0]
+
+    # Если совпадений совсем нет, оставляем старую защиту от мусорных ответов.
     if not meaningful:
-        if _looks_like_random_short_token(query):
-            return [], [], 0.0
-        return passages[:4], [], 0.0
+        return [], [], 0.0
 
-    # Берем только самые релевантные смысловые фрагменты. Соседние чанки больше не добавляем автоматически,
-    # потому что рядом часто лежит оглавление или другой раздел, который портит ответ.
-    selected: list[dict[str, Any]] = []
-    seen_texts: set[str] = set()
-    for item in meaningful:
-        fingerprint = re.sub(r"\W+", "", item["text"].lower())[:220]
-        if fingerprint in seen_texts:
-            continue
-        seen_texts.add(fingerprint)
-        selected.append(item)
-        if len(selected) >= 6:
-            break
+    document_to_courses, course_titles = _load_course_document_map(company_id)
 
-    # Для определения лучше дать модели самый сильный фрагмент первым.
-    selected.sort(key=lambda item: item["score"], reverse=True)
+    selected_course_ids = _choose_best_course_ids(
+        query=query,
+        passages=meaningful,
+        document_to_courses=document_to_courses,
+        course_titles=course_titles,
+    )
 
-    document_ids = list({item["document_id"] for item in selected})
-    course_titles_by_doc = _load_course_titles_by_document(company_id, document_ids)
+    # ВАЖНО: если курс удалось определить, выкидываем все фрагменты из других курсов.
+    if selected_course_ids:
+        allowed_course_ids = set(selected_course_ids)
 
-    doc_best: dict[int, dict[str, Any]] = {}
+        filtered_meaningful = [
+            item
+            for item in meaningful
+            if set(document_to_courses.get(int(item["document_id"]), [])) & allowed_course_ids
+        ]
+
+        if filtered_meaningful:
+            meaningful = filtered_meaningful
+
+    meaningful.sort(key=lambda item: item["score"], reverse=True)
+
+    best_score = float(meaningful[0]["score"]) if meaningful else 0.0
+
+    # Берем меньше фрагментов, чтобы модель не путалась.
+    selected = meaningful[:5]
+
     for item in selected:
-        current = doc_best.get(item["document_id"])
-        if current is None or item["score"] > current["score"]:
-            doc_best[item["document_id"]] = item
+        document_id = int(item["document_id"])
 
-    for item in selected:
-        titles = course_titles_by_doc.get(item["document_id"], [])
+        titles = _course_titles_for_document(
+            document_id=document_id,
+            document_to_courses=document_to_courses,
+            course_titles=course_titles,
+            selected_course_ids=selected_course_ids,
+        )
+
         item["course_titles"] = titles
-        item["course_hint"] = ", ".join(titles) if titles else "Материалы курса"
+        item["course_hint"] = ", ".join(titles) if titles else item["document_title"]
+
+    best_by_document: dict[int, dict[str, Any]] = {}
+
+    for item in selected:
+        document_id = int(item["document_id"])
+
+        if (
+            document_id not in best_by_document
+            or item["score"] > best_by_document[document_id]["score"]
+        ):
+            best_by_document[document_id] = item
 
     sources: list[ChatbotSourceResponse] = []
-    for document_id, item in sorted(doc_best.items(), key=lambda pair: pair[1]["score"], reverse=True):
-        source = _make_course_source(
-            document_id,
-            course_titles_by_doc.get(document_id, []),
+
+    for document_id, item in best_by_document.items():
+        titles = item.get("course_titles") or []
+
+        raw_score = float(item.get("score") or 0)
+
+# В БД bot_query_sources.relevance_score имеет тип numeric(6,4),
+# поэтому сохраняем нормализованное значение от 0 до 1, а не сырой score.
+        normalized_score = min(raw_score / 100.0, 1.0)
+
+        sources.append(
+            ChatbotSourceResponse(
+            document_id=document_id,
+         document_title=", ".join(titles) if titles else item["document_title"],
+            course_titles=titles,
             chunk_id=item.get("chunk_id"),
-            score=float(item["score"]),
+            relevance_score=round(normalized_score, 4),
+         )
         )
-        if source:
-            sources.append(source)
 
     return selected, sources, best_score
+
+
 
 def _ensure_session_owner(session_id: int, user_id: int) -> tuple[int, datetime]:
     with get_postgres_connection() as conn:

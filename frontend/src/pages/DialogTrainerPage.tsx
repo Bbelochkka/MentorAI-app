@@ -334,23 +334,7 @@ function difficultyTitle(options: TrainerOptions, code: string) {
 }
 
 function modeTitle(mode: string) {
-  return mode === 'exam' ? 'Экзамен' : 'Тестовая сессия';
-}
-
-function buildStartTip(scenario: TrainerScenario) {
-  if (scenario.is_full_funnel) {
-    return 'Вы выбрали полную воронку. Начните с холодного звонка: представьтесь, назовите компанию, объясните повод обращения и получите разрешение продолжить разговор.';
-  }
-
-  const tips: Record<string, string> = {
-    intro: 'Начните с короткого приветствия: представьтесь, назовите компанию, объясните повод обращения и спросите, удобно ли клиенту говорить.',
-    need_discovery: 'Первые этапы воронки уже прошли: контакт установлен, клиент готов продолжить разговор. Начните с открытого вопроса о текущей ситуации, потребностях и критериях выбора.',
-    presentation: 'Первые этапы воронки уже прошли: контакт установлен и базовая потребность клиента известна. Начните с короткой связки: какую задачу клиента вы услышали и как продукт компании помогает её решить.',
-    objection: 'Первые этапы воронки уже прошли: клиент знает предложение, но сомневается. Начните с признания сомнения, уточните причину возражения и только потом давайте аргумент.',
-    closing: 'Первые этапы воронки уже прошли: клиент заинтересован и основные сомнения сняты. Начните с короткого итога пользы и предложите конкретный следующий шаг: заявку, КП, демо, встречу или подключение.',
-  };
-
-  return tips[scenario.funnel_stage] ?? 'Начните с уточнения ситуации клиента и аккуратно ведите разговор к цели, указанной в карточке сценария.';
+  return mode === 'exam' ? 'Экзамен' : 'Тренировка';
 }
 
 function splitLines(value?: string | null) {
@@ -371,7 +355,36 @@ function formatCompanyUsage(value?: string | null) {
   return 'Нет';
 }
 
-export function DialogTrainerPage() {
+function getRingPercent(value: number, max: number) {
+  if (max <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((value / max) * 100)));
+}
+
+function AnalyticsCard({
+  value,
+  label,
+  percent,
+  tone,
+}: {
+  value: string | number;
+  label: string;
+  percent: number;
+  tone: 'brown' | 'green' | 'orange' | 'gray';
+}) {
+  return (
+    <article className="trainer-analytics-card">
+      <div
+        className={`trainer-analytics-ring trainer-analytics-ring--${tone}`}
+        style={{ ['--value' as string]: `${percent}%` }}
+      >
+        <span>{value}</span>
+      </div>
+      <p>{label}</p>
+    </article>
+  );
+}
+
+export default function DialogTrainerPage() {
   const [options, setOptions] = useState<TrainerOptions>(DEFAULT_OPTIONS);
   const [sessions, setSessions] = useState<TrainerSessionSummary[]>([]);
   const [activeSession, setActiveSession] = useState<TrainerSession | null>(null);
@@ -396,10 +409,12 @@ export function DialogTrainerPage() {
     () => options.scenarios.find((item) => item.id === Number(selectedScenarioId)) || null,
     [options, selectedScenarioId]
   );
+
   const selectedClient = useMemo(
     () => options.clients.find((item) => item.id === Number(selectedClientId)) || null,
     [options, selectedClientId]
   );
+
   const selectedDifficultyInfo = useMemo(
     () => options.difficulties.find((item) => item.code === selectedDifficulty) || null,
     [options, selectedDifficulty]
@@ -417,12 +432,22 @@ export function DialogTrainerPage() {
     };
   }, [sessions]);
 
-  const renderHistoryItems = (items: TrainerSessionSummary[]) => items.map((session) => (
-    <button key={session.id} type="button" className="trainer-history-item" onClick={() => void openSession(session.id)}>
-      <span>{session.scenario_title} ({formatDate(session.started_at)})</span>
-      <em>{session.status === 'completed' ? 'перейти к информации' : 'продолжить диалог'}</em>
-    </button>
-  ));
+  const analytics = useMemo(() => {
+    const total = sessions.length;
+    const completed = sessions.filter((item) => item.status === 'completed').length;
+    const scored = sessions.filter((item) => typeof item.total_score === 'number');
+    const avgScore = scored.length
+      ? Math.round(scored.reduce((sum, item) => sum + Number(item.total_score || 0), 0) / scored.length)
+      : 0;
+
+    return {
+      total,
+      completed,
+      avgScore,
+      exams: sessions.filter((item) => item.mode === 'exam').length,
+      practice: sessions.filter((item) => item.mode !== 'exam').length,
+    };
+  }, [sessions]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -434,6 +459,7 @@ export function DialogTrainerPage() {
           scenarios: loadedOptions.scenarios.length ? loadedOptions.scenarios : DEFAULT_OPTIONS.scenarios,
           clients: loadedOptions.clients.length ? loadedOptions.clients : DEFAULT_OPTIONS.clients,
           difficulties: loadedOptions.difficulties.length ? loadedOptions.difficulties : DEFAULT_OPTIONS.difficulties,
+          products: loadedOptions.products || [],
         });
         const loadedSessions = await getTrainerSessions();
         setSessions(loadedSessions);
@@ -490,6 +516,20 @@ export function DialogTrainerPage() {
     }
   }
 
+  async function refreshSessions(updated?: TrainerSession) {
+    try {
+      const loaded = await getTrainerSessions();
+      setSessions(loaded);
+      if (updated) {
+        setSessions((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      }
+    } catch {
+      if (updated) {
+        setSessions((prev) => [updated, ...prev.filter((item) => item.id !== updated.id)]);
+      }
+    }
+  }
+
   async function handleCreateSession() {
     if (!canStart || !selectedScenario || !selectedClient || !selectedDifficulty) return;
     setIsCreating(true);
@@ -528,7 +568,7 @@ export function DialogTrainerPage() {
     try {
       const updated = await sendTrainerMessage(activeSession.id, normalized);
       setActiveSession(updated);
-      setSessions((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      await refreshSessions(updated);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : 'Не удалось отправить реплику');
       setMessage(normalized);
@@ -551,92 +591,133 @@ export function DialogTrainerPage() {
     try {
       const updated = await finishTrainerSession(activeSession.id);
       setActiveSession(updated);
-      setSessions((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      await refreshSessions(updated);
     } catch (finishError) {
       setError(finishError instanceof Error ? finishError.message : 'Не удалось завершить диалог');
     }
   }
 
-  const completedDialogs = sessions.filter((item) => item.status === 'completed').length;
+  function renderHistoryItems(items: TrainerSessionSummary[]) {
+    return items.map((session) => (
+      <button
+        key={session.id}
+        type="button"
+        className="trainer-history-item"
+        onClick={() => void openSession(session.id)}
+      >
+        <span className="trainer-history-main">
+          <strong>{session.scenario_title}</strong>
+          <small>
+            {formatDate(session.started_at)}
+            {' · '}
+            {modeTitle(session.mode)}
+            {' · '}
+            {session.status === 'completed' ? 'завершён' : 'активный'}
+            {typeof session.total_score === 'number' ? ` · результат ${session.total_score}%` : ''}
+          </small>
+        </span>
+        <em>перейти к информации</em>
+      </button>
+    ));
+  }
 
   const currentStageTitle = activeSession
-  ? STAGE_TITLES[activeSession.current_stage] || activeSession.current_stage
-  : '';
+    ? STAGE_TITLES[activeSession.current_stage] || activeSession.current_stage
+    : '';
 
-const sessionHeader = activeSession
-  ? [
-      modeTitle(activeSession.mode),
-      activeSession.scenario_title !== currentStageTitle ? activeSession.scenario_title : null,
-      currentStageTitle,
-      difficultyTitle(options, activeSession.difficulty),
-    ]
-      .filter((item): item is string => Boolean(item))
-      .join(' · ')
-  : '';
+  const sessionHeader = activeSession
+    ? [
+        modeTitle(activeSession.mode),
+        activeSession.scenario_title !== currentStageTitle ? activeSession.scenario_title : null,
+        currentStageTitle,
+        difficultyTitle(options, activeSession.difficulty),
+      ]
+        .filter((item): item is string => Boolean(item))
+        .join(' · ')
+    : '';
 
   return (
     <section className={`trainer-page ${activeSession ? 'trainer-page--chat' : ''}`}>
       <div className="trainer-shell">
-
         {error ? <div className="trainer-alert trainer-alert--error">{error}</div> : null}
         {info && !activeSession ? <div className="trainer-alert trainer-alert--info">{info}</div> : null}
 
         {!activeSession ? (
-          <>
-
-            <div className="trainer-home">
-              <div className="trainer-home-header">
-  <h1>Ваша история диалогов:</h1>
-
-  <button
-    type="button"
-    className="trainer-primary-btn trainer-new-btn"
-    onClick={openNewDialogModal}
-  >
-    Новый диалог
-  </button>
-</div>
-              {isLoading ? <p className="trainer-muted">Загружаю данные тренажёра…</p> : null}
-              {!isLoading && sessions.length === 0 ? (
-                <p className="trainer-muted">Пока нет завершённых или начатых диалогов. Нажмите «Новый диалог», чтобы начать тренировку.</p>
-              ) : null}
-              <div className="trainer-history-scroll">
-                {groupedSessions.exams.length ? (
-                  <section className="trainer-history-group">
-                    <h2>Экзамены</h2>
-                    <div className="trainer-history-list">
-                      {renderHistoryItems(groupedSessions.exams)}
-                    </div>
-                  </section>
-                ) : null}
-
-                {groupedSessions.practice.length ? (
-                  <section className="trainer-history-group">
-                    <h2>Тренировочные диалоги</h2>
-                    <div className="trainer-history-list">
-                      {renderHistoryItems(groupedSessions.practice)}
-                    </div>
-                  </section>
-                ) : null}
+          <div className="trainer-home">
+            <div className="trainer-home-header">
+              <div>
+                <h1>Ваша история диалогов</h1>
+                <p className="trainer-home-subtitle">Просматривайте результаты тренировок и переходите к информации по каждой сессии.</p>
               </div>
 
-          
+              <button
+                type="button"
+                className="trainer-primary-btn trainer-new-btn"
+                onClick={openNewDialogModal}
+              >
+                Новый диалог
+              </button>
             </div>
-          </>
+
+            <div className="trainer-history-analytics">
+              <AnalyticsCard value={analytics.total} label="Всего сессий" percent={100} tone="brown" />
+              <AnalyticsCard
+                value={analytics.completed}
+                label="Завершено"
+                percent={getRingPercent(analytics.completed, analytics.total)}
+                tone="green"
+              />
+              <AnalyticsCard value={`${analytics.avgScore}%`} label="Средний результат" percent={analytics.avgScore} tone="orange" />
+              <AnalyticsCard value={analytics.exams} label="Экзамены" percent={getRingPercent(analytics.exams, analytics.total)} tone="gray" />
+              <AnalyticsCard
+                value={analytics.practice}
+                label="Тренировки"
+                percent={getRingPercent(analytics.practice, analytics.total)}
+                tone="green"
+              />
+            </div>
+
+            {isLoading ? <p className="trainer-muted">Загружаю данные тренажёра…</p> : null}
+
+            {!isLoading && sessions.length === 0 ? (
+              <p className="trainer-muted">Пока нет завершённых или начатых диалогов. Нажмите «Новый диалог», чтобы начать тренировку.</p>
+            ) : null}
+
+            <div className="trainer-history-scroll">
+              {groupedSessions.exams.length ? (
+                <section className="trainer-history-group">
+                  <h2>Экзамены</h2>
+                  <div className="trainer-history-list">
+                    {renderHistoryItems(groupedSessions.exams)}
+                  </div>
+                </section>
+              ) : null}
+
+              {groupedSessions.practice.length ? (
+                <section className="trainer-history-group">
+                  <h2>Тренировочные диалоги</h2>
+                  <div className="trainer-history-list">
+                    {renderHistoryItems(groupedSessions.practice)}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          </div>
         ) : (
           <div className="trainer-chat-layout">
             <div className="trainer-chat-header">
               <button type="button" className="trainer-secondary-btn trainer-back-btn" onClick={() => setActiveSession(null)}>
                 ← К истории
               </button>
+
               <div className="trainer-chat-meta">
-                <p>
-                 {sessionHeader}
-                </p>
+                <p>{sessionHeader}</p>
               </div>
+
               <button type="button" className="trainer-primary-btn trainer-primary-btn--small" onClick={() => setIsBriefOpen(true)}>
                 Информация
               </button>
+
               {activeSession.status !== 'completed' ? (
                 <button type="button" className="trainer-secondary-btn" onClick={() => void handleFinishManual()}>
                   Завершить вручную
@@ -664,26 +745,30 @@ const sessionHeader = activeSession
                   </div>
                 </div>
               ))}
+
               {isSending ? (
                 <div className="trainer-message trainer-message--virtual_client">
-                  <div className="trainer-message-bubble">Клиент отвечает…</div>
+                  <div className="trainer-message-bubble">
+                    <p>Клиент отвечает…</p>
+                  </div>
                 </div>
               ) : null}
             </div>
 
-            {activeSession.status === 'completed' && activeSession.result ? (
+            {activeSession.result ? (
               <div className="trainer-result-card">
                 <div className="trainer-result-head">
-                  <h2>Итог тренировки</h2>
-                  <div className="trainer-result-score">{Math.round(activeSession.result.total_score)}%</div>
+                  <h2>Итоговая информация</h2>
+                  <span className="trainer-result-score">{activeSession.result.total_score}%</span>
                 </div>
+
                 <div className="trainer-result-grid">
                   <div>
                     <b>Сильные стороны</b>
                     {splitLines(activeSession.result.strong_sides).map((line) => <p key={line}>{line}</p>)}
                   </div>
                   <div>
-                    <b>Зоны роста</b>
+                    <b>Что улучшить</b>
                     {splitLines(activeSession.result.weak_sides).map((line) => <p key={line}>{line}</p>)}
                   </div>
                   <div>
@@ -692,171 +777,151 @@ const sessionHeader = activeSession
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : null}
+
+            {activeSession.status !== 'completed' ? (
               <form className="trainer-composer" onSubmit={(event) => void handleSend(event)}>
                 <textarea
                   ref={composerRef}
                   value={message}
-                  onChange={(event) => setMessage(event.target.value)}
-                  onInput={growComposer}
+                  placeholder="Напишите реплику менеджера"
+                  onChange={(event) => {
+                    setMessage(event.target.value);
+                    setTimeout(growComposer, 0);
+                  }}
                   onKeyDown={handleComposerKeyDown}
-                  placeholder="Введите реплику менеджера"
                   disabled={isSending}
-                  rows={1}
                 />
-                <button type="submit" disabled={isSending || !message.trim()}>
-                  ➤
+                <button type="submit" disabled={!message.trim() || isSending}>
+                  ↑
                 </button>
               </form>
-            )}
+            ) : null}
           </div>
         )}
-      </div>
 
-      {isModalOpen ? (
-        <div className="trainer-modal-backdrop">
-          <div className="trainer-modal trainer-modal--wide">
-            <div className="trainer-modal-header">
-              <h2>Выберите параметры</h2>
-              <button type="button" onClick={() => setIsModalOpen(false)}>×</button>
-            </div>
-
-            <div className="trainer-form-grid">
-              <label>
-                <span>Этап / сценарий:</span>
-                <select value={selectedScenarioId} onChange={(event) => setSelectedScenarioId(Number(event.target.value))}>
-                  <option value="" disabled hidden>Этап не выбран</option>
-                  {options.scenarios.map((scenario) => (
-                    <option key={scenario.id} value={scenario.id}>{scenario.title}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Сложность:</span>
-                <select value={selectedDifficulty} onChange={(event) => setSelectedDifficulty(event.target.value)}>
-                  <option value="" disabled hidden>Сложность не выбрана</option>
-                  {options.difficulties.map((difficulty) => (
-                    <option key={difficulty.code} value={difficulty.code}>{difficulty.title}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Клиент:</span>
-                <select value={selectedClientId} onChange={(event) => setSelectedClientId(Number(event.target.value))}>
-                  <option value="" disabled hidden>Клиент не выбран</option>
-                  {options.clients.map((client) => (
-                    <option key={client.id} value={client.id}>{client.name}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Режим:</span>
-                <select value={selectedMode} onChange={(event) => setSelectedMode(event.target.value)}>
-                  <option value="practice">Тестовая сессия</option>
-                  <option value="exam">Экзамен</option>
-                </select>
-              </label>
-            </div>
-
-            {(selectedScenario || selectedClient || selectedDifficultyInfo) ? (
-              <div className="trainer-parameter-cards">
-                {selectedScenario ? (
-                  <div className="trainer-hint-card">
-                    <b>{selectedScenario.title}</b>
-                    <p>{selectedScenario.stage_hint || selectedScenario.description}</p>
-                    <p><strong>Финальная точка:</strong> {selectedScenario.final_goal}</p>
-                    <p><strong>С чего начать:</strong> {buildStartTip(selectedScenario)}</p>
-                  </div>
-                ) : null}
-
-                {selectedClient ? (
-                  <div className="trainer-hint-card">
-                    <b>{selectedClient.name}{selectedClient.age ? `, ${selectedClient.age} лет` : ''}</b>
-                    <p>{selectedClient.position}</p>
-                    <p>{selectedClient.persona}</p>
-                    <p><strong>Темперамент:</strong> {selectedClient.temperament}</p>
-                    <p><strong>Настрой:</strong> {selectedClient.attitude}</p>
-                    <p><strong>Стиль общения:</strong> {selectedClient.communication_style}</p>
-                    <p><strong>Пользуется услугами компании:</strong> {formatCompanyUsage(selectedClient.buying_history)}</p>
-                    <p><strong>Роль в решении:</strong> {selectedClient.decision_role}</p>
-                    <p><strong>Боли:</strong> {selectedClient.pain_points}</p>
-                    <p><strong>Типовые возражения:</strong> {selectedClient.typical_objections}</p>
-                  </div>
-                ) : null}
-
-                {selectedDifficultyInfo ? (
-                  <div className="trainer-hint-card">
-                    <b>{selectedDifficultyInfo.title}</b>
-                    <p>{selectedDifficultyInfo.description}</p>
-                  </div>
-                ) : null}
+        {isModalOpen ? (
+          <div className="trainer-modal-backdrop" role="presentation">
+            <div className="trainer-modal trainer-modal--wide">
+              <div className="trainer-modal-header">
+                <h2>Новый диалог</h2>
+                <button type="button" onClick={() => setIsModalOpen(false)}>×</button>
               </div>
-            ) : null}
 
-            <div className="trainer-modal-note">
-              Информация о товарах и услугах для продажи будет взята из опубликованных курсов и обработанных документов компании.
-            </div>
+              <div className="trainer-form-grid">
+                <label>
+                  <span>Сценарий</span>
+                  <select value={selectedScenarioId} onChange={(event) => setSelectedScenarioId(Number(event.target.value) || '')}>
+                    <option value="">Выберите сценарий</option>
+                    {options.scenarios.map((scenario) => (
+                      <option key={scenario.id} value={scenario.id}>{scenario.title}</option>
+                    ))}
+                  </select>
+                </label>
 
-            <div className="trainer-modal-actions">
-              <button type="button" className="trainer-secondary-btn" onClick={() => setIsModalOpen(false)}>Отмена</button>
-              <button type="button" className="trainer-primary-btn" onClick={() => void handleCreateSession()} disabled={isCreating || !canStart}>
-                {isCreating ? 'Создаю…' : 'Начать диалог'}
-              </button>
+                <label>
+                  <span>Клиент</span>
+                  <select value={selectedClientId} onChange={(event) => setSelectedClientId(Number(event.target.value) || '')}>
+                    <option value="">Выберите клиента</option>
+                    {options.clients.map((client) => (
+                      <option key={client.id} value={client.id}>{client.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span>Сложность</span>
+                  <select value={selectedDifficulty} onChange={(event) => setSelectedDifficulty(event.target.value)}>
+                    <option value="">Выберите сложность</option>
+                    {options.difficulties.map((difficulty) => (
+                      <option key={difficulty.code} value={difficulty.code}>{difficulty.title}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span>Режим</span>
+                  <select value={selectedMode} onChange={(event) => setSelectedMode(event.target.value)}>
+                    <option value="practice">Тренировка</option>
+                    <option value="exam">Экзамен</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="trainer-parameter-cards">
+                <div className="trainer-hint-card">
+                  <b>Сценарий</b>
+                  <p>{selectedScenario?.description || 'Выберите сценарий тренировки.'}</p>
+                  <p>{selectedScenario?.stage_hint || ''}</p>
+                </div>
+
+                <div className="trainer-hint-card">
+                  <b>Клиент</b>
+                  <p>{selectedClient ? `${selectedClient.name}, ${renderValue(selectedClient.position)}` : 'Выберите профиль клиента.'}</p>
+                  <p>{selectedClient?.persona || selectedClient?.communication_style || ''}</p>
+                </div>
+
+                <div className="trainer-hint-card">
+                  <b>Сложность</b>
+                  <p>{selectedDifficultyInfo?.description || 'Выберите уровень сложности.'}</p>
+                </div>
+              </div>
+
+              <div className="trainer-modal-actions">
+                <button type="button" className="trainer-secondary-btn" onClick={() => setIsModalOpen(false)}>
+                  Отмена
+                </button>
+                <button type="button" className="trainer-primary-btn" onClick={() => void handleCreateSession()} disabled={!canStart || isCreating}>
+                  {isCreating ? 'Создаю…' : 'Начать диалог'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {isBriefOpen && activeSession ? (
-        <div className="trainer-modal-backdrop">
-          <div className="trainer-modal trainer-modal--brief">
-            <div className="trainer-modal-header">
-              <h2>Информация о диалоге</h2>
-              <button type="button" onClick={() => setIsBriefOpen(false)}>×</button>
-            </div>
-            <div className="trainer-brief-content">
-              <section>
-                <b>Финальная цель</b>
-                <p>{activeSession.final_goal}</p>
-              </section>
-              <section>
-                <b>С чего стоит начать</b>
-                <p>{activeSession.brief_start_tip}</p>
-              </section>
-              <section>
-                <b>Оппонент</b>
-                <p><strong>Имя и роль:</strong> {activeSession.client_name}{activeSession.client_position ? ` — ${activeSession.client_position}` : ''}</p>
-                <p><strong>Возраст:</strong> {renderValue(activeSession.client_age)}</p>
-                <p><strong>Темперамент:</strong> {renderValue(activeSession.client_temperament)}</p>
-                <p><strong>Настрой:</strong> {renderValue(activeSession.client_attitude)}</p>
-                <p><strong>Стиль общения:</strong> {renderValue(activeSession.client_communication_style)}</p>
-                <p><strong>Пользуется услугами компании:</strong> {formatCompanyUsage(activeSession.client_buying_history)}</p>
-                <p><strong>Роль в принятии решения:</strong> {renderValue(activeSession.client_decision_role)}</p>
-                <p><strong>Уровень технической грамотности:</strong> {renderValue(activeSession.client_tech_level)}</p>
-                <p><strong>Описание клиента:</strong> {renderValue(activeSession.client_persona)}</p>
-                <p><strong>Боли:</strong> {renderValue(activeSession.client_pain_points)}</p>
-                <p><strong>Типовые возражения:</strong> {renderValue(activeSession.client_typical_objections)}</p>
-              </section>
-              <section>
-                <b>Материалы для продажи</b>
-                <p>Тренажёр использует опубликованные курсы и обработанные документы компании. В диалоге менеджер может назвать конкретный продукт, а виртуальный клиент будет реагировать на него с учётом корпоративных материалов.</p>
-              </section>
-              <section>
-                <b>Инструкция</b>
-                <p>Ваша задача — довести диалог до финальной точки. Если цель достигнута, тренажёр завершит диалог автоматически. Завершить вручную можно, но тогда система отметит, что цель не была достигнута автоматически.</p>
-              </section>
-            </div>
-            <div className="trainer-modal-actions">
-              <button type="button" className="trainer-primary-btn" onClick={() => setIsBriefOpen(false)}>Перейти к диалогу</button>
+        {isBriefOpen && activeSession ? (
+          <div className="trainer-modal-backdrop" role="presentation">
+            <div className="trainer-modal trainer-modal--brief">
+              <div className="trainer-modal-header">
+                <h2>Информация о диалоге</h2>
+                <button type="button" onClick={() => setIsBriefOpen(false)}>×</button>
+              </div>
+
+              <div className="trainer-brief-content">
+                <section>
+                  <b>Сценарий</b>
+                  <p>{activeSession.scenario_title}</p>
+                  <p>{activeSession.scenario_description || 'Описание не указано.'}</p>
+                  <p><strong>Текущий этап:</strong> {currentStageTitle}</p>
+                  <p><strong>Финальная цель:</strong> {activeSession.final_goal || 'не указана'}</p>
+                </section>
+
+                <section>
+                  <b>Клиент</b>
+                  <p>{activeSession.client_name}, {renderValue(activeSession.client_position)}</p>
+                  <p><strong>Возраст:</strong> {renderValue(activeSession.client_age)}</p>
+                  <p><strong>Темперамент:</strong> {renderValue(activeSession.client_temperament)}</p>
+                  <p><strong>Настрой:</strong> {renderValue(activeSession.client_attitude)}</p>
+                  <p><strong>Пользуется услугами компании:</strong> {formatCompanyUsage(activeSession.client_buying_history)}</p>
+                  <p><strong>Роль в принятии решения:</strong> {renderValue(activeSession.client_decision_role)}</p>
+                </section>
+
+                <section>
+                  <b>Боли и возражения</b>
+                  <p><strong>Боли:</strong> {renderValue(activeSession.client_pain_points)}</p>
+                  <p><strong>Типичные возражения:</strong> {renderValue(activeSession.client_typical_objections)}</p>
+                </section>
+              </div>
+
+              <div className="trainer-modal-actions">
+                <button type="button" className="trainer-primary-btn" onClick={() => setIsBriefOpen(false)}>
+                  Понятно
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </section>
   );
 }
-
-export default DialogTrainerPage;

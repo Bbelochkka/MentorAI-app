@@ -152,6 +152,13 @@ class TrainerSessionResponse(TrainerSessionSummaryResponse):
     messages: list[TrainerMessageResponse]
     result: TrainerResultResponse | None = None
 
+class TrainerDialogAnalyticsResponse(BaseModel):
+    total_sessions: int
+    completed_sessions: int
+    avg_score: float
+    exam_sessions: int
+    practice_sessions: int
+
 
 _DIFFICULTIES = [
     TrainerDifficultyResponse(
@@ -622,35 +629,104 @@ def _score_context_block(query: str, text: str) -> float:
         score += 20.0
     return score
 
+def _load_company_knowledge_context(
+    company_id: int,
+    query: str,
+    *,
+    max_chars: int = 6500,
+    selected_products: list[TrainerSessionProductResponse] | None = None,
+) -> str:
+    """
+    Контекст для диалогового тренажера.
 
-def _load_company_knowledge_context(company_id: int, query: str, *, max_chars: int = 6500) -> str:
+    Исправление:
+    - если в сессии выбран продукт/курс, используем прежде всего его;
+    - если продукт не выбран, берем только 1-2 самых релевантных блока,
+      а не все курсы компании подряд.
+    """
+    selected_products = selected_products or []
+
     blocks: list[dict[str, Any]] = []
-    for course in _load_course_texts(company_id):
-        text = _compact(course.get("text") or "")
-        if text:
-            blocks.append({"title": f"Курс: {course.get('title')}", "text": text[:5000], "score": _score_context_block(query, text)})
-    for document in _load_processed_document_texts(company_id):
-        text = _compact(document.get("text") or "")
-        if text:
-            blocks.append({"title": f"Документ: {document.get('title')}", "text": text[:5000], "score": _score_context_block(query, text)})
 
+    for product in selected_products:
+        # product может быть Pydantic-объектом или dict, поэтому читаем безопасно
+        if isinstance(product, dict):
+            product_title = product.get("product_title") or product.get("title") or "Выбранный продукт"
+            product_context = product.get("product_context") or product.get("context") or ""
+        else:
+            product_title = getattr(product, "product_title", None) or "Выбранный продукт"
+            product_context = getattr(product, "product_context", None) or ""
+
+        product_title = _compact(product_title)
+        product_context = _compact(product_context)
+
+        if product_context:
+            blocks.append(
+                {
+                    "title": f"Выбранный продукт: {product_title}",
+                    "text": product_context,
+                    "score": 10_000.0,
+                }
+            )
+
+    # Если продукт явно не выбран, fallback — ищем самый близкий курс/документ.
     if not blocks:
-        return "Корпоративные материалы пока не найдены. Клиент может попросить менеджера уточнить продукт, цену и условия."
+        for course in _load_course_texts(company_id):
+            text = course["text"]
+            blocks.append(
+                {
+                    "title": f"Курс: {course['title']}",
+                    "text": text,
+                    "score": _score_context_block(query, f"{course['title']} {text}"),
+                }
+            )
 
-    blocks.sort(key=lambda item: item["score"], reverse=True)
-    rendered: list[str] = []
-    used = 0
-    for block in blocks[:5]:
-        piece = f"[{block['title']}]\n{block['text']}"
-        if used + len(piece) > max_chars:
-            piece = piece[: max(0, max_chars - used)]
-        if piece.strip():
-            rendered.append(piece.strip())
-            used += len(piece)
-        if used >= max_chars:
+        for document in _load_processed_document_texts(company_id):
+            text = document["text"]
+            blocks.append(
+                {
+                    "title": f"Документ: {document['title']}",
+                    "text": text,
+                    "score": _score_context_block(query, f"{document['title']} {text}"),
+                }
+            )
+
+        if not blocks:
+            return "Корпоративные материалы не загружены."
+
+        blocks.sort(key=lambda item: item["score"], reverse=True)
+
+        meaningful_blocks = [block for block in blocks if block["score"] > 0]
+
+        if meaningful_blocks:
+            blocks = meaningful_blocks[:2]
+        else:
+            blocks = blocks[:1]
+
+    parts: list[str] = []
+    used_chars = 0
+
+    for block in blocks:
+        title = _compact(block["title"])
+        text = _compact(block["text"])
+
+        if not text:
+            continue
+
+        available = max_chars - used_chars - len(title) - 20
+
+        if available <= 0:
             break
-    return "\n\n".join(rendered)
 
+        fragment = text[:available]
+
+        parts.append(f"{title}\n{fragment}")
+        used_chars += len(title) + len(fragment) + 20
+
+    if not parts:
+        return "Корпоративные материалы не найдены."
+
+    return "\n\n---\n\n".join(parts)
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     if not text:
@@ -805,6 +881,51 @@ def _build_product_context(product: TrainerProductResponse) -> str:
     return "\n".join(parts)
 
 
+def _resolve_selected_products(
+    requested_products: list[TrainerSelectedProductRequest],
+    available_products: dict[int, TrainerProductResponse],
+) -> list[tuple[int | None, str, str]]:
+    """
+    Преобразует выбранные пользователем продукты в данные,
+    которые будут сохранены в dialog_trainer_session_products.
+    """
+    selected: list[tuple[int | None, str, str]] = []
+
+    for item in requested_products:
+        if item.product_id is not None:
+            product = available_products.get(item.product_id)
+
+            if product is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Продукт с id={item.product_id} не найден или недоступен",
+                )
+
+            selected.append(
+                (
+                    product.id,
+                    product.title,
+                    _build_product_context(product),
+                )
+            )
+
+            continue
+
+        manual_title = _compact(item.manual_title)
+        manual_description = _compact(item.manual_description)
+
+        if manual_title:
+            selected.append(
+                (
+                    None,
+                    manual_title,
+                    f"Название продукта: {manual_title}\nОписание: {manual_description}",
+                )
+            )
+
+    return selected
+
+
 def _render_history(messages: list[TrainerMessageResponse]) -> str:
     rendered = []
     for message in messages[-12:]:
@@ -857,19 +978,70 @@ def _clean_client_reply(text: str) -> str:
         return ""
     return cleaned
 
+_FAKE_CLIENT_ADDRESSES = {
+    "евгений": "Я в Москве, ул. Новодмитровская, 2к1. Если нужно подъехать, лучше заранее согласовать время.",
+    "ольга": "Я в Казани, ул. Баумана, 21. Но мне удобнее сначала обсудить всё по телефону.",
+    "игорь": "Офис находится в Санкт-Петербурге, Невский проспект, 55. Встречи лучше планировать заранее.",
+    "николай петрович": "Я живу в Нижнем Новгороде, ул. Большая Покровская, 18. Только предупредите заранее, если нужно подъехать.",
+}
+
+
+def _answer_address_if_asked(
+    user_message: str,
+    session: dict[str, Any],
+) -> str | None:
+    """
+    Если менеджер спрашивает адрес клиента, тренажер должен ответить как клиент.
+    Адрес вымышленный, нужен только для реалистичности диалога.
+    """
+    lowered = _normalize_key(user_message)
+
+    address_markers = (
+        "адрес",
+        "город",
+        "где вы",
+        "где находитесь",
+        "где находится",
+        "куда приехать",
+        "куда подъехать",
+        "куда отправить",
+        "офис",
+        "точка",
+        "локация",
+    )
+
+    if not any(marker in lowered for marker in address_markers):
+        return None
+
+    client_name = _normalize_key(str(session.get("client_name") or ""))
+
+    for name_part, address in _FAKE_CLIENT_ADDRESSES.items():
+        if name_part in client_name:
+            return address
+
+    return (
+        "Я сейчас в Екатеринбурге, ул. Малышева, 44. "
+        "Если нужно подъехать или что-то отправить, лучше заранее согласовать время."
+    )
+
 
 def _generate_client_reply(session: dict[str, Any], messages: list[TrainerMessageResponse], user_message: str, company_id: int) -> str:
+    address_reply = _answer_address_if_asked(user_message, session)
+
+    if address_reply:
+        return address_reply
     """Генерирует реплику виртуального клиента только через текущий LLM-провайдер.
 
     Здесь специально нет заранее прописанных fallback-реплик. Если LLM
     недоступен или вернул некорректный ответ, backend отдаёт понятную ошибку 502.
     Так проще отлаживать интеграцию и не получать «фальшивый» диалог из шаблонов.
     """
+  
     knowledge_context = _load_company_knowledge_context(
-        company_id,
-        f"{session.get('scenario_title')} {session.get('current_stage')} {session.get('client_pain_points')} {user_message}",
-        max_chars=2600,
-    )
+    company_id=company_id,
+    query=user_message,
+    selected_products=session.get("selected_products", []),
+)
     previous_client_replies = [m.message_text for m in messages if m.sender_type == "virtual_client"][-8:]
 
     difficulty_rules = {
@@ -897,6 +1069,7 @@ def _generate_client_reply(session: dict[str, Any], messages: list[TrainerMessag
 - если менеджер хорошо ведёт этап воронки, уточняет потребность, связывает пользу с проблемой клиента и предлагает конкретный следующий шаг — становись более открытым;
 - если финальная цель этапа действительно достигнута, можешь согласиться на следующий шаг;
 - не соглашайся на цель слишком рано, если менеджер не подвёл к ней разговор.
+- если менеджер спрашивает адрес, город, офис, где вы находитесь, куда приехать или куда отправить документы, отвечай как клиент и называй правдоподобный вымышленный адрес: город, улица, дом; не говори, что адреса нет в материалах.
 """.strip()
 
     prompt = f"""
@@ -1137,16 +1310,158 @@ def _stage_success_markers(stage: str) -> list[str]:
     return markers.get(stage, [])
 
 
-def _goal_is_reached(session: dict[str, Any], client_reply: str, user_message: str, user_turns: int) -> bool:
-    stage = session.get("current_stage") or "custom"
-    if not _manager_action_matches_stage(stage, user_message, user_turns):
-        return False
-    combined = f"{client_reply} {user_message}".lower().replace("ё", "е")
-    markers = _stage_success_markers(stage)
-    raw_markers = session.get("success_markers") or ""
-    markers.extend([m.strip().lower().replace("ё", "е") for m in re.split(r"[;\n]+", raw_markers) if m.strip()])
-    return any(marker in combined for marker in markers)
+def _client_reply_signals_success(stage: str, client_reply: str) -> bool:
+    """
+    Проверяет, что клиент не просто ответил,
+    а фактически согласился на цель текущего этапа.
+    """
+    lowered = _normalize_key(client_reply)
 
+    refusal_markers = (
+        "неинтересно",
+        "не интересно",
+        "не звоните",
+        "до свидания",
+        "не подходит",
+        "отказываюсь",
+        "не готов",
+        "не хочу",
+        "потом как-нибудь",
+    )
+
+    if any(marker in lowered for marker in refusal_markers):
+        return False
+
+    agreement_markers = (
+        "да",
+        "хорошо",
+        "ок",
+        "окей",
+        "согласен",
+        "согласна",
+        "давайте",
+        "готов",
+        "готова",
+        "можно",
+        "подходит",
+        "удобно",
+        "интересно",
+        "логично",
+        "понятно",
+        "присылайте",
+        "отправляйте",
+        "оформляйте",
+        "назначим",
+    )
+
+    if not any(marker in lowered for marker in agreement_markers):
+        return False
+
+    stage_markers = {
+        "intro": (
+            "слушаю",
+            "задавайте",
+            "давайте коротко",
+            "можно",
+            "говорите",
+            "готов выслушать",
+        ),
+        "need_discovery": (
+            "мне важно",
+            "нужно",
+            "хочу",
+            "проблема",
+            "не хватает",
+            "критерии",
+            "задача",
+        ),
+        "presentation": (
+            "интересно",
+            "подходит",
+            "понимаю пользу",
+            "можно обсудить",
+            "расскажите условия",
+        ),
+        "objection": (
+            "логично",
+            "понятно",
+            "готов обсудить",
+            "давайте посмотрим",
+            "звучит разумно",
+        ),
+        "closing": (
+            "оформляйте",
+            "давайте подключим",
+            "пришлите кп",
+            "согласен на демо",
+            "согласна на демо",
+            "назначим встречу",
+            "готов попробовать",
+            "давайте заявку",
+        ),
+    }
+
+    expected_markers = stage_markers.get(stage, ())
+
+    return any(marker in lowered for marker in expected_markers)
+
+
+def _goal_is_reached(
+    *,
+    session: dict[str, Any],
+    user_message: str,
+    client_reply: str,
+    user_turns: int,
+) -> bool:
+    """
+    Более мягкое и устойчивое завершение этапа.
+    Минимальная длина сессии — 2 сообщения пользователя.
+    """
+    if user_turns < 2:
+        return False
+
+    stage = session.get("current_stage") or session.get("funnel_stage") or "custom"
+
+    lower_user = _normalize_key(user_message)
+    lower_client = _normalize_key(client_reply)
+    combined_text = f"{lower_user} {lower_client}"
+
+    raw_markers = _compact(session.get("success_markers"))
+    success_markers = [
+        _normalize_key(marker)
+        for marker in re.split(r"[;\n,]+", raw_markers)
+        if _normalize_key(marker)
+    ]
+
+    marker_hit = any(marker in combined_text for marker in success_markers)
+
+    # Для intro считаем достижением не только прямое согласие,
+    # но и любые содержательные уточняющие вопросы клиента.
+    intro_interest_markers = (
+        "какая модель", "какие характеристики", "какая цена", "сколько стоит",
+        "какие условия", "расскажите", "интересно", "что именно", "а какая",
+        "а какие", "что за", "как это работает"
+    )
+    intro_question_signal = stage == "intro" and ("?" in client_reply or any(m in lower_client for m in intro_interest_markers))
+
+    manager_did_expected_action = (
+        _manager_action_matches_stage(stage, user_message, user_turns)
+        or user_turns >= 2
+    )
+
+    if marker_hit and manager_did_expected_action:
+        return True
+
+    if _client_reply_signals_success(stage, client_reply) and manager_did_expected_action:
+        return True
+
+    if intro_question_signal and manager_did_expected_action:
+        return True
+
+    if stage == "closing" and _client_reply_signals_success(stage, client_reply):
+        return True
+
+    return False
 
 def _score_dialog(
     session: dict[str, Any],
@@ -1158,17 +1473,23 @@ def _score_dialog(
     """Формирует итоговую аналитику только через текущий LLM-провайдер."""
     rendered_dialog = _render_history(messages)
     knowledge_context = _load_company_knowledge_context(
-        company_id,
-        f"{session.get('scenario_title')} {session.get('current_stage')} {session.get('client_pain_points')} {rendered_dialog}",
-        max_chars=3200,
+        company_id=company_id,
+        query=rendered_dialog,
+        selected_products=session.get("selected_products", []),
     )
 
     system_prompt = """
 Ты эксперт по обучению менеджеров по продажам и наставник для стажёров.
-Оцени только предоставленный тренировочный диалог.
-Учитывай этап воронки, финальную цель, характер клиента, знание продукта, вопросы менеджера, аргументацию и следующий шаг.
-Все значения внутри JSON пиши только на русском языке.
-Ответ верни строго в формате JSON без markdown, без ``` и без пояснений вокруг JSON.
+Твоя задача — дать логичную, практичную и честную обратную связь по тренировочному диалогу.
+
+Правила: 
+- оцени только предоставленный тренировочный диалог;
+- не пиши общие или расплывчатые советы;
+- каждая рекомендация должна быть привязана к конкретной ошибке или недоработке менеджера;
+- рекомендации должны быть реалистичными: что именно сказать, что спросить и зачем;
+- не противоречь сценарию, этапу воронки и профилю клиента;
+- все значения внутри JSON пиши только на русском языке;
+- ответ верни строго в формате JSON без markdown, без ``` и без пояснений вокруг JSON.
 """.strip()
 
     prompt = f"""
@@ -1182,6 +1503,7 @@ def _score_dialog(
 Характер клиента: {session.get('client_persona') or ''} {session.get('client_attitude') or ''} {session.get('client_communication_style') or ''}
 Пользуется услугами компании: {session.get('client_buying_history') or 'Нет'}
 Боли клиента: {session.get('client_pain_points') or 'нет данных'}
+Типичные возражения: {session.get('client_typical_objections') or 'нет данных'}
 
 Корпоративные материалы:
 {knowledge_context}
@@ -1192,20 +1514,24 @@ def _score_dialog(
 Верни JSON строго такого вида:
 {{
   "total_score": 0,
-  "strong_sides": "2-3 конкретных пункта на русском через \\n: что менеджер сделал хорошо именно в этом диалоге",
-  "weak_sides": "2-3 конкретных пункта на русском через \\n: что было неверно или слабо именно в этом диалоге",
-  "recommendations": "4-5 практических рекомендаций на русском через \\n: что конкретно улучшить в следующей попытке"
+  "strong_sides": "3 коротких и конкретных пункта через 
+",
+  "weak_sides": "3 коротких и конкретных пункта через 
+",
+  "recommendations": "4 конкретные рекомендации через 
+"
 }}
 
 Требования к оценке:
 - total_score должен быть числом от 0 до 100;
-- если диалог завершён вручную и цель не достигнута, не ставь высокий балл;
-- не пиши общие фразы, привязывай выводы к конкретным репликам менеджера;
-- сильные стороны, зоны роста и рекомендации пиши только на русском языке;
-- рекомендации должны быть содержательными, но компактными: в каждом пункте укажи, что именно сказать/спросить, зачем это нужно и как это поможет довести клиента до цели;
-- в рекомендациях учитывай профиль оппонента: темперамент, стиль общения, пользуется ли он услугами компании, роль в принятии решения, боли и типичные возражения;
-- если менеджер ошибся в цене, условиях или слишком быстро давил на клиента, обязательно отметь это в weak_sides;
-- если менеджер задавал хорошие вопросы или корректно обработал сомнение, отметь это в strong_sides.
+- если цель не достигнута, не ставь высокий балл;
+- strong_sides: только реальные сильные стороны, которые действительно были в диалоге;
+- weak_sides: укажи, чего не хватило для прохождения этапа;
+- recommendations: каждая рекомендация должна начинаться с действия менеджера, например: «Сначала уточни...», «После этого предложи...», «Не называй цену, пока не...», «Задай вопрос...»;
+- избегай абстрактных фраз вроде «улучшить коммуникацию», «быть увереннее», «лучше знать продукт» без пояснения как это сделать;
+- если менеджер слишком быстро перешёл к продукту или цене, обязательно отметь это;
+- если менеджер не зафиксировал согласие клиента на следующий шаг, обязательно отметь это;
+- если менеджер задавал хорошие уточняющие вопросы или логично вёл этап, отметь это в strong_sides.
 """.strip()
 
     def _parse_score_payload(raw_text: str) -> tuple[float, str, str, str] | None:
@@ -1227,7 +1553,7 @@ def _score_dialog(
         return score, strong, weak, recommendations
 
     try:
-        raw = _call_llm(prompt, system_prompt=system_prompt, max_tokens=1100)
+        raw = _call_llm(prompt, system_prompt=system_prompt, max_tokens=1200)
         parsed = _parse_score_payload(raw)
         if parsed:
             return parsed
@@ -1237,9 +1563,9 @@ def _score_dialog(
 Предыдущий ответ был в неправильном формате:
 {raw}
 
-Исправь ответ. Верни только валидный JSON указанной структуры. Все текстовые значения должны быть на русском языке.
+Исправь ответ. Верни только валидный JSON указанной структуры. Текст должен быть логичным, практичным и только на русском языке.
 """.strip()
-        raw_retry = _call_llm(retry_prompt, system_prompt=system_prompt, max_tokens=1100)
+        raw_retry = _call_llm(retry_prompt, system_prompt=system_prompt, max_tokens=1200)
         parsed_retry = _parse_score_payload(raw_retry)
         if parsed_retry:
             return parsed_retry
@@ -1471,7 +1797,7 @@ def get_trainer_options(current_user: dict = Depends(get_current_user)) -> Train
     return TrainerOptionsResponse(
         scenarios=[_scenario_from_row(row) for row in scenario_rows],
         clients=[_client_from_row(row) for row in client_rows],
-        products=[],
+        products=_load_course_products(company_id),
         difficulties=_DIFFICULTIES,
     )
 
@@ -1517,6 +1843,27 @@ def list_trainer_sessions(current_user: dict = Depends(get_current_user)) -> lis
     return result
 
 
+@router.get("/analytics", response_model=TrainerDialogAnalyticsResponse)
+def get_trainer_analytics(current_user: dict = Depends(get_current_user)) -> TrainerDialogAnalyticsResponse:
+    _ensure_trainer_schema()
+    sessions = list_trainer_sessions(current_user)
+
+    total_sessions = len(sessions)
+    completed_sessions = len([session for session in sessions if session.status == "completed"])
+    scored_sessions = [session.total_score for session in sessions if session.total_score is not None]
+    avg_score = round(sum(scored_sessions) / len(scored_sessions), 1) if scored_sessions else 0.0
+    exam_sessions = len([session for session in sessions if session.mode == "exam"])
+    practice_sessions = len([session for session in sessions if session.mode == "practice"])
+
+    return TrainerDialogAnalyticsResponse(
+        total_sessions=total_sessions,
+        completed_sessions=completed_sessions,
+        avg_score=avg_score,
+        exam_sessions=exam_sessions,
+        practice_sessions=practice_sessions,
+    )
+
+
 @router.post("/sessions", response_model=TrainerSessionResponse, status_code=status.HTTP_201_CREATED)
 def create_trainer_session(
     payload: TrainerSessionCreateRequest,
@@ -1530,6 +1877,14 @@ def create_trainer_session(
         raise HTTPException(status_code=400, detail="Некорректный режим тренировки")
 
     company_id = current_user["company_id"]
+    available_products = {
+        product.id: product
+        for product in _load_course_products(company_id)
+    }
+    selected_products = _resolve_selected_products(
+        requested_products=payload.products,
+        available_products=available_products,
+    )
 
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
@@ -1576,6 +1931,17 @@ def create_trainer_session(
             )
             session_id = cur.fetchone()[0]
 
+            for product_id, product_title, product_context in selected_products:
+                cur.execute(
+                    """
+                    INSERT INTO dialog_trainer_session_products (
+                        session_id, product_id, product_title, product_context
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (session_id, product_id, product_title, product_context),
+                )
+
             cur.execute(
                 """
                 INSERT INTO dialog_trainer_messages (session_id, sender_type, message_text)
@@ -1583,6 +1949,7 @@ def create_trainer_session(
                 """,
                 (session_id, f"Цель тренировки: {final_goal}\nС чего начать: {_stage_start_tip(start_stage, scenario.is_full_funnel)}"),
             )
+
         conn.commit()
 
     return _build_session_response(session_id, current_user["id"])
@@ -1625,7 +1992,12 @@ def send_trainer_message(
     session["selected_products"] = _load_products_for_session(session_id)
     client_reply = _generate_client_reply(session, messages_with_user, message, current_user["company_id"])
 
-    goal_reached_for_stage = _goal_is_reached(session, client_reply, message, user_turns)
+    goal_reached_for_stage = _goal_is_reached(
+        session=session,
+        user_message=message,
+        client_reply=client_reply,
+        user_turns=user_turns,
+    )
     new_stage = session["current_stage"]
     completed = False
     system_transition_message: str | None = None
