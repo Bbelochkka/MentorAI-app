@@ -816,6 +816,7 @@ def update_course_status(
 @app.delete("/api/courses/{course_id}")
 def delete_course(course_id: int, current_user: dict = Depends(get_current_user)) -> dict[str, str]:
     require_admin_user(current_user)
+
     with get_postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -831,6 +832,44 @@ def delete_course(course_id: int, current_user: dict = Depends(get_current_user)
             if not row:
                 raise HTTPException(status_code=404, detail="Курс не найден")
 
+            # Сначала удаляем ответы на попытки тестов этого курса
+            cur.execute(
+                """
+                DELETE FROM question_responses
+                WHERE attempt_id IN (
+                    SELECT ta.id
+                    FROM test_attempts ta
+                    JOIN tests t ON t.id = ta.test_id
+                    WHERE t.course_id = %s
+                )
+                """,
+                (course_id,),
+            )
+
+            # Потом удаляем сами попытки прохождения тестов
+            cur.execute(
+                """
+                DELETE FROM test_attempts
+                WHERE test_id IN (
+                    SELECT id
+                    FROM tests
+                    WHERE course_id = %s
+                )
+                """,
+                (course_id,),
+            )
+
+            # Потом удаляем тесты курса.
+            # test_versions, questions и question_options удалятся каскадом
+            cur.execute(
+                """
+                DELETE FROM tests
+                WHERE course_id = %s AND company_id = %s
+                """,
+                (course_id, current_user["company_id"]),
+            )
+
+            # После тестов можно удалять структуру курса
             cur.execute(
                 """
                 DELETE FROM course_topics
