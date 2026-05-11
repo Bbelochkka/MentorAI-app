@@ -1,16 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&display=swap');
 :root {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #3f342f;
-  background: #fdfcf8;
+  background: #ffffff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --bg: #fdfcf8;
-  --panel-bg: #fffdfa;
+  --bg: #ffffff;
+  --panel-bg: #ffffff;
+  --brand-mentor: #87A96E;
+  --brand-ai: #D3A373;
   --text: #3f342f;
   --muted: #a79687;
   --border: #e9e0d6;
@@ -98,7 +101,7 @@ img { max-width: 100%; }
   position: relative;
   min-height: 100vh;
   overflow: hidden;
-  background: #fcfbf7;
+  background: #ffffff;
 }
 
 .login-hero-image {
@@ -124,17 +127,41 @@ img { max-width: 100%; }
 }
 
 .brand {
-  font-size: 28px;
+  font-family: 'Montserrat', Inter, system-ui, sans-serif;
+  font-size: 36px;
+  letter-spacing: 4px;
   font-weight: 700;
   margin-bottom: 42px;
   line-height: 1;
+  letter-spacing: -0.02em;
 }
 
-.brand__mentor { color: var(--green-dark); }
-.brand__ai { color: var(--orange); }
+.brand__mentor,
+.brand__ai {
+  letter-spacing: 1px;
+}
 
-.login-form { display: flex; flex-direction: column; gap: 14px; }
-.login-form__label { color: #c7a386; font-size: 18px; margin-bottom: 2px; }
+.brand__mentor {
+  color: #87A96E;
+}
+
+.brand__ai {
+  color: #D3A373;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-weight: 400;
+}
+
+.login-form__label {
+  color: #c7a386;
+  font-size: 18px;
+  font-weight: 400;
+  margin: 0;
+}
 
 .login-input {
   width: 100%;
@@ -144,27 +171,72 @@ img { max-width: 100%; }
   background: #fff;
   padding: 0 16px;
   font-size: 16px;
+  font-weight: 400;
   color: var(--text);
   outline: none;
 }
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.login-field-error {
+  margin: 0;
+  color: #FB6767;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.login-input--error {
+  border-color: #FB6767;
+  color: #FB6767;
+}
+
+.login-input--error::placeholder {
+  color: #FB6767;
+  opacity: 0.7;
+}
+
+.login-input--error:focus {
+  border-color: #FB6767;
+  box-shadow: 0 0 0 4px rgba(251, 103, 103, 0.12);
+}
+
+
 
 .login-input:focus {
   border-color: var(--orange);
   box-shadow: 0 0 0 4px rgba(217, 162, 79, 0.12);
 }
 
-.password-field { position: relative; }
-.password-field .login-input { padding-right: 54px; }
+.password-field {
+  position: relative;
+  height: 46px;
+}
+.password-field .login-input {
+  height: 46px;
+  padding-right: 54px;
+}
 .password-toggle {
   position: absolute;
-  top: 50%;
+  top: 0;
   right: 14px;
-  transform: translateY(-50%);
+  width: 34px;
+  height: 46px;
+  transform: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 18px;
+  line-height: 1;
   color: #8b7e74;
 }
+
 .submit-button {
-  margin-top: 4px;
+  margin: 0;
   width: fit-content;
   min-width: 86px;
   height: 40px;
@@ -174,28 +246,39 @@ img { max-width: 100%; }
   color: #fff;
   font-weight: 700;
 }
+
 .submit-button:hover { background: var(--orange-dark); }
 .submit-button:disabled { opacity: 0.7; cursor: not-allowed; }
-.forgot-link { margin-top: 2px; width: fit-content; color: #d3ab8d; font-size: 15px; }
+.forgot-link {
+  margin: 0;
+  width: fit-content;
+  color: #d3ab8d;
+  font-size: 15px;
+  font-weight: 400;
+}
 .login-error { margin: 4px 0 0; color: var(--danger); font-size: 14px; }
 
 /* app layout */
 .app-layout {
   height: 100vh;
   display: grid;
-  grid-template-columns: 240px 1fr;
-  background: var(--bg);
+  grid-template-columns: 260px minmax(0, 1fr);
+  column-gap: 10px;
+  background: #ffffff;
   overflow: hidden;
 }
 
 .sidebar {
+  width: 260px;
   height: 100vh;
-  background: #fffdfa;
-  border-right: 1px solid var(--border);
+  background: #ffffff;
+  border-right: 1px solid #B2B1B1;
+  box-shadow: 0 5px 4px rgba(0, 0, 0, 0.25);
   padding: 28px 20px 24px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  z-index: 2;
 }
 
 .sidebar-top {
@@ -208,7 +291,12 @@ img { max-width: 100%; }
   padding-right: 4px;
 }
 
-.sidebar-brand { font-size: 26px; font-weight: 700; line-height: 1; }
+.sidebar-brand {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
 .sidebar-nav { display: flex; flex-direction: column; gap: 8px; }
 .sidebar-link {
   display: flex;
@@ -229,7 +317,10 @@ img { max-width: 100%; }
   padding-top: 24px;
   margin-top: auto;
   flex-shrink: 0;
-  background: #fffdfa;
+  background: #ffffff;
+}
+.login-field + .login-field {
+  margin-top: 30px;
 }
 
 .chatbot-shortcut {
@@ -246,8 +337,10 @@ img { max-width: 100%; }
 .app-content {
   height: 100vh;
   overflow-y: auto;
-  background: var(--bg);
-  padding: 32px 36px;
+  background: #ffffff;
+  padding: 30px;
+  width: 100%;
+  min-width: 0;
 }
 
 .page-title {
@@ -260,7 +353,7 @@ img { max-width: 100%; }
 
 .placeholder-page { display: flex; flex-direction: column; gap: 24px; }
 .placeholder-card {
-  background: #fffdfa;
+  background: #ffffff;
   border: 1px solid var(--border);
   border-radius: 24px;
   box-shadow: var(--shadow);
@@ -366,7 +459,7 @@ img { max-width: 100%; }
 .ui-section {
   border: 1px solid var(--ui-border-soft);
   border-radius: 24px;
-  background: #fffdfa;
+  background: #ffffff;
   padding: 20px 22px;
 }
 .ui-section + .ui-section { margin-top: 18px; }
@@ -571,7 +664,7 @@ img { max-width: 100%; }
 .documents-preview-box {
   border: 1px solid var(--ui-border-soft);
   border-radius: 22px;
-  background: #fffdfa;
+  background: #ffffff;
   padding: 18px 20px;
   min-height: 440px;
 }
@@ -605,21 +698,27 @@ img { max-width: 100%; }
     overflow: visible;
   }
   .sidebar {
-    height: auto;
-    min-height: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    overflow: visible;
+  width: 300px;
+  height: 100vh;
+  background: #ffffff;
+  border-right: 1px solid var(--border);
+  padding: 28px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   }
   .sidebar-top {
     overflow: visible;
     min-height: auto;
   }
   .app-content {
-    height: auto;
-    overflow: visible;
-    padding: 24px 20px;
-  }
+  height: 100vh;
+  overflow-y: auto;
+  background: #ffffff;
+  padding: 30px;
+  width: 100%;
+  min-width: 0;
+}
 }
 
 @media (max-width: 960px) {

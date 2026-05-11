@@ -17,6 +17,17 @@ import '../styles/home.css';
 function formatPercent(value: number) {
   return `${Math.round(value)}%`;
 }
+function getPercentTone(value: number): 'green' | 'orange' | 'red' {
+  if (value < 40) {
+    return 'red';
+  }
+
+  if (value < 70) {
+    return 'orange';
+  }
+
+  return 'green';
+}
 
 function isCompletedTest(test: TestSummaryDto) {
   return test.best_attempt_percent !== null && test.best_attempt_percent !== undefined;
@@ -194,6 +205,60 @@ const adaptationIndex =
     </section>
   );
 }
+function ManagerSummaryCard({
+  title,
+  value,
+  subtitle,
+  tone = 'default',
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  tone?: 'default' | 'green' | 'orange' | 'red';
+}) {
+  return (
+    <article className={`manager-summary-card manager-summary-card--${tone}`}>
+      <div className="manager-summary-card__badge">
+        <div className="manager-summary-card__value">{value}</div>
+      </div>
+
+      <div className="manager-summary-card__content">
+        <h3 className="manager-summary-card__title">{title}</h3>
+        {subtitle ? <p className="manager-summary-card__subtitle">{subtitle}</p> : null}
+      </div>
+    </article>
+  );
+}
+
+function isEmployeeAtRisk(employee: AnalyticsEmployeeCardDto) {
+  return (
+    employee.adaptation_index < 40 ||
+    employee.tests_completed_percent < 50 ||
+    employee.correct_answers_percent < 50 ||
+    employee.material_progress_percent < 50
+  );
+}
+
+function getRiskReason(employee: AnalyticsEmployeeCardDto) {
+  if (employee.adaptation_index < 40) {
+    return 'низкий индекс адаптации';
+  }
+
+  if (employee.tests_completed_percent < 50) {
+    return 'пройдено мало тестов';
+  }
+
+  if (employee.correct_answers_percent < 50) {
+    return 'низкий результат по тестам';
+  }
+
+  if (employee.material_progress_percent < 50) {
+    return 'не завершены учебные материалы';
+  }
+
+  return 'требуется внимание руководителя';
+}
+
 
 function ManagerHome() {
   const navigate = useNavigate();
@@ -221,51 +286,148 @@ function ManagerHome() {
     void loadEmployees();
   }, []);
 
+  const averageAdaptation = employees.length
+    ? employees.reduce((sum, employee) => sum + employee.adaptation_index, 0) / employees.length
+    : 0;
+
+  const averageCorrectAnswers = employees.length
+    ? employees.reduce((sum, employee) => sum + employee.correct_answers_percent, 0) / employees.length
+    : 0;
+
+  const riskEmployees = employees.filter(isEmployeeAtRisk);
+
   return (
-    <section className="ui-page home-page">
-      <h1 className="home-title">Добро пожаловать, {currentUser?.name ?? 'руководитель'}!</h1>
+    <section className="ui-page home-page manager-home-page">
+      <div className="manager-home-header">
+        <h1 className="home-title">Добро пожаловать, {currentUser?.name ?? 'руководитель'}!</h1>
+      </div>
 
       {error ? <div className="feedback-banner feedback-banner--error">{error}</div> : null}
 
-      <div className="home-section">
-        <h2 className="home-section__title">Ваши сотрудники</h2>
+      {isLoading ? (
+        <div className="ui-card ui-empty-card">Загрузка главного экрана…</div>
+      ) : employees.length === 0 ? (
+        <div className="ui-card ui-empty-card">
+          Сотрудники не найдены. Проверьте, что сотрудники прикреплены к этому руководителю.
+        </div>
+      ) : (
+        <>
+          <div className="manager-summary-grid">
+            <ManagerSummaryCard
+              title="Всего сотрудников"
+              value={String(employees.length)}
+              subtitle="под вашим руководством"
+              tone="green"
+            />
 
-        {isLoading ? (
-          <div className="ui-card ui-empty-card">Загрузка сотрудников…</div>
-        ) : employees.length === 0 ? (
-          <div className="ui-card ui-empty-card">
-            Сотрудники не найдены. Проверьте, что в админ-панели сотрудники прикреплены к этому руководителю.
+            <MetricCard
+              title="Средняя адаптация"
+              value={averageAdaptation}
+              subtitle="средний индекс по команде"
+              tone={getPercentTone(averageAdaptation)}
+            />
+
+            <MetricCard
+              title="Правильных ответов"
+              value={averageCorrectAnswers}
+              subtitle="средний результат тестов"
+              tone={getPercentTone(averageCorrectAnswers)}
+            />
           </div>
-        ) : (
-          <div className="home-employee-list">
-            {employees.map((employee, index) => (
-              <button
-                key={employee.employee_id}
-                type="button"
-                className="home-employee-row"
-                onClick={() => navigate(`/app/analytics/employees/${employee.employee_id}`)}
-              >
-                <div className="home-employee-row__main">
-                  <span className="home-employee-row__number">{index + 1}.</span>
-                  <div>
-                    <div className="home-employee-row__name">{employee.full_name}</div>
-                    <div className="home-employee-row__meta">
-                      Индекс адаптации: {formatPercent(employee.adaptation_index)} · Правильных ответов:{' '}
-                      {formatPercent(employee.correct_answers_percent)}
+
+          <div className="home-section">
+            <div className="manager-section-header">
+              <div>
+                <h2 className="home-section__title">Сотрудники, требующие внимания</h2>
+                <p className="manager-section-subtitle">
+                  В этот блок попадают сотрудники с низким индексом адаптации, слабым результатом тестов
+                  или незавершёнными материалами.
+                </p>
+              </div>
+            </div>
+
+            {riskEmployees.length === 0 ? (
+              <div className="ui-card ui-empty-card">
+                Сейчас нет сотрудников в зоне риска. Команда проходит адаптацию стабильно.
+              </div>
+            ) : (
+              <div className="manager-risk-list">
+                {riskEmployees.map((employee) => (
+                  <article key={employee.employee_id} className="manager-risk-card">
+                    <div>
+                      <div className="manager-risk-card__top">
+                        <h3 className="manager-risk-card__name">{employee.full_name}</h3>
+                        <span className="manager-risk-badge">в риске</span>
+                      </div>
+
+                      <p className="manager-risk-card__reason">
+                        Причина: {getRiskReason(employee)}
+                      </p>
+
+                      <div className="manager-risk-card__metrics">
+                        <span>Адаптация: {formatPercent(employee.adaptation_index)}</span>
+                        <span>Материалы: {formatPercent(employee.material_progress_percent)}</span>
+                        <span>Тесты: {formatPercent(employee.tests_completed_percent)}</span>
+                        <span>Ответы: {formatPercent(employee.correct_answers_percent)}</span>
+                      </div>
                     </div>
-                  </div>
-                </div>
 
-                <span className="home-employee-row__link">перейти к информации</span>
-              </button>
-            ))}
+                    <Button
+                      variant="outline"
+                      onClick={() => navigate(`/app/analytics/employees/${employee.employee_id}`)}
+                    >
+                      Подробнее
+                    </Button>
+                  </article>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          <div className="home-section">
+            <h2 className="home-section__title">Все сотрудники</h2>
+
+            <div className="manager-employee-grid">
+              {employees.map((employee) => {
+                const atRisk = isEmployeeAtRisk(employee);
+
+                return (
+                  <button
+                    key={employee.employee_id}
+                    type="button"
+                    className={`manager-employee-card ${atRisk ? 'manager-employee-card--risk' : ''}`}
+                    onClick={() => navigate(`/app/analytics/employees/${employee.employee_id}`)}
+                  >
+                    <div className="manager-employee-card__header">
+                      <h3 className="manager-employee-card__name">{employee.full_name}</h3>
+                      <span className={`manager-status ${atRisk ? 'manager-status--risk' : 'manager-status--ok'}`}>
+                        {atRisk ? 'требует внимания' : 'стабильно'}
+                      </span>
+                    </div>
+
+                    <div className="manager-employee-card__metrics">
+                      <div>
+                        <span>Индекс адаптации</span>
+                        <strong>{formatPercent(employee.adaptation_index)}</strong>
+                      </div>
+
+                      <div>
+                        <span>Правильных ответов</span>
+                        <strong>{formatPercent(employee.correct_answers_percent)}</strong>
+                      </div>
+                    </div>
+
+                    <span className="manager-employee-card__link">перейти к информации</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
-
 export function HomePage() {
   const currentUser = getStoredUser();
 
