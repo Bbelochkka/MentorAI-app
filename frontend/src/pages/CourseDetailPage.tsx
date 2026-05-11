@@ -321,8 +321,8 @@ export function CourseDetailPage() {
       <div className="ui-card ui-card--padded" style={{ marginBottom: '20px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <div style={{ minWidth: 0, flex: '1 1 420px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
-              <StatusBadge status={courseToRender.status} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '0px' }}>
+              {!learner ? <StatusBadge status={courseToRender.status} /> : null}
             </div>
             {isEditingDraft ? (
               <div className="ui-field">
@@ -345,7 +345,7 @@ export function CourseDetailPage() {
             )}
           </div>
 
-          <div className="ui-course-card__actions" style={{ justifyContent: 'flex-start' }}>
+          <div className="ui-course-card__actions learner-course-detail-actions" style={{ justifyContent: learner ? 'center' : 'flex-start' }}>
             {relatedTest && !isEditingDraft ? (
               <Button variant="primary" onClick={() => navigate(`/app/tests/${relatedTest.test_id}`)} fullWidth>
                 Перейти к тесту

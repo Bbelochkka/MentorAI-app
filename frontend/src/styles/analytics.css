@@ -125,8 +125,10 @@
 
 .analytics-employee-header__name {
   margin: 0 0 8px;
-  font-size: 28px;
-  color: var(--ui-text);
+  font-size: 30px;
+  font-weight: 600;
+  color: #d4a064;
+;
 }
 
 .analytics-employee-header__line {
@@ -210,7 +212,8 @@
 
 .analytics-block__title {
   margin: 0 0 18px;
-  font-size: 28px;
+  font-size: 36px;
+  font-weight: 600;
   color: var(--ui-text);
 }
 
@@ -257,7 +260,7 @@
 
 .analytics-progress-row__value {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 00;
   text-align: right;
 }
 
@@ -282,7 +285,7 @@
   border: 1px solid var(--ui-border-soft);
   border-radius: 18px;
   padding: 16px 18px;
-  background: #fffdfa;
+  background: #ffffff;
 }
 
 .analytics-error-card__top {
@@ -300,7 +303,7 @@
 
 .analytics-error-card__rate {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   color: #ef6a6a;
 }
 

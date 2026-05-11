@@ -174,7 +174,7 @@ export function TestsPage() {
               <article key={test.test_id} className="ui-card ui-card--padded ui-course-card">
                 <div>
                   <div className="ui-course-card__meta">
-                    <StatusBadge status={test.status} />
+                    {!learner ? <StatusBadge status={test.status} /> : null}
                     {!learner ? (
                       <Button variant={isPublished ? 'outline' : 'primary'} onClick={() => void handlePublishToggle(test)}>
                         {isPublished ? 'Снять с публикации' : 'Опубликовать'}

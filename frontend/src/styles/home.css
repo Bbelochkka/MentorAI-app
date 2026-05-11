@@ -9,7 +9,7 @@
   font-size: 30px;
   line-height: 1.2;
   color: #d09b62;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .home-metrics-grid {
@@ -23,7 +23,7 @@
   min-height: 118px;
   border: 1px solid var(--ui-border);
   border-radius: 18px;
-  background: #fffdfb;
+  background: #ffffff;
   padding: 18px 20px;
   display: flex;
   align-items: center;
@@ -79,8 +79,8 @@
 
 .home-metric-card__subtitle {
   margin: 4px 0 0;
-  color: #7fa465;
-  font-size: 13px;
+  color: #4f433b;
+  font-size: 14px;
 }
 
 .home-section {
@@ -276,6 +276,37 @@
   font-size: 15px;
   line-height: 1.35;
   font-weight: 400;
+}
+.home-metrics-grid .home-metric-card {
+  min-height: 150px;
+  padding: 24px 28px;
+  gap: 26px;
+  background: #ffffff;
+  border: 1px solid #B2B1B1;
+  border-radius: 22px;
+}
+
+.home-metrics-grid .home-metric-card__ring {
+  width: 112px;
+  height: 112px;
+}
+
+.home-metrics-grid .home-metric-card__inner {
+  width: 78px;
+  height: 78px;
+  background: #ffffff;
+  font-size: 26px;
+}
+
+.home-metrics-grid .home-metric-card__title {
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 500;
+}
+
+.home-metrics-grid .home-metric-card__subtitle {
+  color: var(--ui-text-muted);
+  font-size: 15px;
 }
 
 .manager-summary-grid .home-metric-card {
@@ -524,6 +555,22 @@
   transform: translateY(-1px);
 }
 
+.learner-tasks-section .home-section__title,
+.learner-about-section .home-section__title {
+  font-size: 36px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.home-tasks-empty {
+  padding: 0;
+  color: var(--ui-text);
+  font-size: 16px;
+  line-height: 1.5;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
 .manager-employee-card--risk {
   border-color: rgba(251, 103, 103, 0.35);
 }
@@ -640,7 +687,7 @@
 }
 
 @media (max-width: 760px) {
-  .home-title,
+  
   .home-section__title {
     font-size: 26px;
   }

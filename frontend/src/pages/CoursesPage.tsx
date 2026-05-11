@@ -171,7 +171,7 @@ export function CoursesPage() {
         <div>
           <h1 className="ui-page__title">Курсы</h1>
           <p className="ui-page__subtitle">
-            {learner ? 'Список опубликованных курсов вашей компании.' : 'Список черновиков и опубликованных курсов компании.'}
+            {learner ? 'Список курсов вашей компании.' : 'Список черновиков и опубликованных курсов компании.'}
           </p>
         </div>
         {!learner ? (
@@ -253,14 +253,24 @@ export function CoursesPage() {
             return (
               <article key={course.course_id} className="ui-card ui-card--padded ui-course-card">
                 <div>
-                  <div className="ui-course-card__meta">
-                    <StatusBadge status={course.status} />
-                    {!learner ? (
-                      <Button variant={isPublished ? 'outline' : 'primary'} size="sm" onClick={() => void handleStatusChange(course.course_id, isPublished ? 'draft' : 'published')} disabled={isUpdatingStatus === course.course_id}>
-                        {isUpdatingStatus === course.course_id ? 'Сохранение…' : isPublished ? 'Снять с публикации' : 'Опубликовать курс'}
-                      </Button>
-                    ) : null}
-                  </div>
+                  {!learner ? (
+  <div className="ui-course-card__meta">
+    <StatusBadge status={course.status} />
+
+    <Button
+      variant={isPublished ? 'outline' : 'primary'}
+      size="sm"
+      onClick={() => void handleStatusChange(course.course_id, isPublished ? 'draft' : 'published')}
+      disabled={isUpdatingStatus === course.course_id}
+    >
+      {isUpdatingStatus === course.course_id
+        ? 'Сохранение…'
+        : isPublished
+          ? 'Снять с публикации'
+          : 'Опубликовать курс'}
+    </Button>
+  </div>
+) : null}
                   <h2 className="ui-course-card__title">{course.title}</h2>
                   <p className="ui-course-card__description">{truncateDescription(course.description || 'Описание курса не заполнено.')}</p>
                   {!learner && course.source_documents.length > 0 ? (

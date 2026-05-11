@@ -2,12 +2,14 @@ import { CSSProperties, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AnalyticsEmployeeCardDto,
+  AnalyticsEmployeeDetailDto,
   CourseSummaryDto,
   TestSummaryDto,
   getAnalyticsEmployees,
   getCourses,
   getStoredUser,
   getTests,
+  getMyAnalytics,
   isLearnerUser,
 } from '../api';
 import { Button } from '../components/ui/Button';
@@ -67,6 +69,7 @@ function LearnerHome() {
 
   const [courses, setCourses] = useState<CourseSummaryDto[]>([]);
   const [tests, setTests] = useState<TestSummaryDto[]>([]);
+  const [analyticsDetail, setAnalyticsDetail] = useState<AnalyticsEmployeeDetailDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,9 +78,15 @@ function LearnerHome() {
     setError(null);
 
     try {
-      const [courseItems, testItems] = await Promise.all([getCourses(), getTests()]);
-      setCourses(courseItems);
-      setTests(testItems);
+      const [courseItems, testItems, analyticsData] = await Promise.all([
+  getCourses(),
+  getTests(),
+  getMyAnalytics(),
+]);
+
+setCourses(courseItems);
+setTests(testItems);
+setAnalyticsDetail(analyticsData);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить главный экран');
     } finally {
@@ -103,24 +112,11 @@ function LearnerHome() {
     return tests.filter((test) => !isCompletedTest(test));
   }, [tests]);
 
-  const materialProgressPercent = courses.length
-    ? (completedCourseIds.size * 100) / courses.length
-    : 0;
-
-  const testsCompletedPercent = tests.length
-    ? (completedTests.length * 100) / tests.length
-    : 0;
-
-  const correctAnswersPercent = completedTests.length
-    ? completedTests.reduce((sum, test) => sum + (test.best_attempt_percent ?? 0), 0) / completedTests.length
-    : 0;
-
-const dialogScorePercent = 0;
-
-const adaptationIndex =
-  materialProgressPercent * 0.3 +
-  correctAnswersPercent * 0.3 +
-  dialogScorePercent * 0.4;
+const materialProgressPercent = analyticsDetail?.employee.material_progress_percent ?? 0;
+const testsCompletedPercent = analyticsDetail?.employee.tests_completed_percent ?? 0;
+const correctAnswersPercent = analyticsDetail?.employee.correct_answers_percent ?? 0;
+const dialogScorePercent = analyticsDetail?.employee.dialog_score_percent ?? 0;
+const adaptationIndex = analyticsDetail?.employee.adaptation_index ?? 0;
   const tasks = [
     ...notCompletedCourses.map((course) => ({
       id: `course-${course.course_id}`,
@@ -151,30 +147,30 @@ const adaptationIndex =
               title="Индекс адаптации"
               value={adaptationIndex}
               subtitle="по курсам, тестам и диалогам"
-              tone="green"
+              tone={getPercentTone(adaptationIndex)}
             />
             <MetricCard
               title="Пройдено тестов"
               value={testsCompletedPercent}
               subtitle={`${completedTests.length} из ${tests.length}`}
-              tone="orange"
+              tone={getPercentTone(testsCompletedPercent)}
             />
             <MetricCard
               title="Правильных ответов"
               value={correctAnswersPercent}
               subtitle="средний лучший результат"
-              tone="red"
+              tone={getPercentTone(correctAnswersPercent)}
             />
           </div>
 
-          <div className="home-section">
-            <h2 className="home-section__title">Ваши задачи</h2>
+          <div className="home-section learner-tasks-section">
+  <h2 className="home-section__title">Ваши задачи</h2>
 
-            {tasks.length === 0 ? (
-              <div className="ui-card ui-empty-card">
-                На данный момент нет непройденных курсов и тестов.
-              </div>
-            ) : (
+  {tasks.length === 0 ? (
+    <div className="home-tasks-empty">
+      На данный момент нет непройденных курсов и тестов.
+    </div>
+  ) : (
               <div className="home-task-list">
                 {tasks.map((task, index) => (
                   <article key={task.id} className="home-task-row">
@@ -192,8 +188,8 @@ const adaptationIndex =
             )}
           </div>
 
-          <div className="home-section home-about-company">
-            <h2 className="home-section__title">О компании</h2>
+          <div className="home-section home-about-company learner-about-section">
+  <h2 className="home-section__title">О компании</h2>
             <p>
               Компания занимается продажей продуктов и услуг, с которыми менеджер знакомится во время
               адаптации. Обучающие курсы, тесты и диалоговый тренажёр помогают быстрее освоить продукт,

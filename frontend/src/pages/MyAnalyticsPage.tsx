@@ -103,7 +103,6 @@ export function MyAnalyticsPage() {
   if (error || !detail) {
     return (
       <div className="analytics-page">
-        <div className="analytics-breadcrumbs">Главная &gt; Моя аналитика</div>
         <div className="ui-alert ui-alert--error">
           {error ?? 'Данные аналитики не найдены'}
         </div>
@@ -113,7 +112,7 @@ export function MyAnalyticsPage() {
 
   return (
     <div className="analytics-page">
-      <div className="analytics-breadcrumbs">Главная &gt; Моя аналитика</div>
+  
 
       <div className="analytics-employee-header">
         <h1 className="analytics-employee-header__name">Моя аналитика</h1>

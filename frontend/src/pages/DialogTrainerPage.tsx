@@ -577,7 +577,6 @@ const sessionHeader = activeSession
   return (
     <section className={`trainer-page ${activeSession ? 'trainer-page--chat' : ''}`}>
       <div className="trainer-shell">
-        <div className="trainer-breadcrumb">Главная &gt; Диалоговый тренажёр</div>
 
         {error ? <div className="trainer-alert trainer-alert--error">{error}</div> : null}
         {info && !activeSession ? <div className="trainer-alert trainer-alert--info">{info}</div> : null}
@@ -586,7 +585,17 @@ const sessionHeader = activeSession
           <>
 
             <div className="trainer-home">
-              <h1>Ваша история диалогов:</h1>
+              <div className="trainer-home-header">
+  <h1>Ваша история диалогов:</h1>
+
+  <button
+    type="button"
+    className="trainer-primary-btn trainer-new-btn"
+    onClick={openNewDialogModal}
+  >
+    Новый диалог
+  </button>
+</div>
               {isLoading ? <p className="trainer-muted">Загружаю данные тренажёра…</p> : null}
               {!isLoading && sessions.length === 0 ? (
                 <p className="trainer-muted">Пока нет завершённых или начатых диалогов. Нажмите «Новый диалог», чтобы начать тренировку.</p>
@@ -611,11 +620,7 @@ const sessionHeader = activeSession
                 ) : null}
               </div>
 
-              <div className="trainer-home-footer">
-                <button type="button" className="trainer-primary-btn trainer-new-btn" onClick={openNewDialogModal}>
-                  Новый диалог
-                </button>
-              </div>
+          
             </div>
           </>
         ) : (

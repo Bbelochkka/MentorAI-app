@@ -262,7 +262,6 @@ export function GuidePage() {
 
   return (
     <div className="guide-page">
-      <div className="guide-breadcrumbs">Главная &gt; Руководство пользователя</div>
 
       <section className="guide-hero">
         <div>

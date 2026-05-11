@@ -13,12 +13,29 @@
 
 .trainer-shell {
   width: 100%;
-  max-width: 1240px;
+  max-width: none;
   height: 100%;
   min-height: 0;
-  margin: 0 auto;
+  margin: 0;
   display: flex;
   flex-direction: column;
+}
+.trainer-home-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+.trainer-home-header h1 {
+  margin: 0;
+}
+
+.trainer-home-header .trainer-new-btn {
+  flex-shrink: 0;
 }
 
 .trainer-page--chat .trainer-shell {
@@ -147,7 +164,7 @@
   color: #4a403b;
   font-size: 34px;
   line-height: 1.08;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .trainer-muted {
@@ -173,13 +190,12 @@
   color: #4b3f39;
   font-size: 20px;
   line-height: 1.2;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .trainer-history-list {
   display: grid;
   gap: 10px;
-  max-width: 920px;
 }
 
 .trainer-history-item {
@@ -219,9 +235,9 @@
 .trainer-primary-btn,
 .trainer-secondary-btn {
   min-height: 42px;
-  border-radius: 999px;
+  border-radius: 12px;
   padding: 0 22px;
-  font-weight: 800;
+  font-weight: 700;
   font-size: 15px;
   white-space: nowrap;
   transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease;

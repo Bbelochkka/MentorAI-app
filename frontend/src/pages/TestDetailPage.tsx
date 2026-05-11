@@ -77,6 +77,17 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
   const [isStarting, setIsStarting] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
 
+  const hasAutoStartedRef = useRef(false);
+
+useEffect(() => {
+  if (hasAutoStartedRef.current || attempt || result || isStarting) {
+    return;
+  }
+
+  hasAutoStartedRef.current = true;
+  void handleStartAttempt();
+}, [attempt, result, isStarting]);
+
   const currentQuestion = attempt?.questions[currentQuestionIndex] ?? null;
   const answeredCount = attempt
     ? attempt.questions.filter((question) => selectedAnswers[question.id] != null).length
@@ -145,13 +156,15 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
     return (
       <section className="ui-page">
         {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
-        {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
+        {localMessage ? (
+  <p className="test-result-message">{localMessage}</p>
+) : null} 
         <div style={{ marginBottom: 18 }}>
           <Link to="/app/tests" className="ui-back-link">← Назад к списку тестов</Link>
         </div>
 
-        <div className="ui-card ui-card--padded" style={{ marginBottom: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div className="ui-card ui-card--padded" style={{ marginBottom: 20, alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <h1 className="ui-page__title" style={{ fontSize: 32 }}>{result.title}</h1>
               <p className="ui-page__subtitle" style={{ marginTop: 10 }}>
@@ -197,7 +210,7 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
                     ? 'var(--ui-success-bg)'
                     : isSelectedWrong
                       ? '#fff2f1'
-                      : '#fffdfa';
+                      : '#ffffff';
 
                   const color = isSelectedCorrect
                     ? 'var(--ui-success-text)'
@@ -245,41 +258,24 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
     );
   }
 
-  if (!attempt) {
-    return (
-      <section className="ui-page">
-        {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
-        {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
-        <div style={{ marginBottom: 18 }}>
-          <Link to="/app/tests" className="ui-back-link">← Назад к списку тестов</Link>
-        </div>
+if (!attempt) {
+  return (
+    <div className="ui-card ui-card--padded">
+      {localError ? (
+        <div className="ui-alert ui-alert--error">{localError}</div>
+      ) : null}
 
-        <article className="ui-card ui-card--padded ui-course-card">
-          <div>
-            <div className="ui-course-card__meta">
-              <StatusBadge status={test.status} />
-            </div>
-            <h1 className="ui-course-card__title">{test.title}</h1>
-            <p className="ui-course-card__description">Курс-источник: {test.course_title}</p>
-            <p className="ui-course-card__documents">Вопросов: {test.questions.length}</p>
-          </div>
-
-          <div className="ui-course-card__actions">
-            <Button variant="primary" onClick={() => void handleStartAttempt()} disabled={isStarting} fullWidth>
-              {isStarting ? 'Подготовка…' : 'Начать тест'}
-            </Button>
-          </div>
-        </article>
-      </section>
-    );
-  }
+      <p>{isStarting ? 'Подготовка теста…' : 'Загрузка теста…'}</p>
+    </div>
+  );
+}
 
   return (
     <section className="ui-page">
       {localError ? <div className="feedback-banner feedback-banner--error">{localError}</div> : null}
       {localMessage ? <div className="feedback-banner feedback-banner--success">{localMessage}</div> : null}
       <div className="ui-card ui-card--padded" style={{ marginBottom: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ minWidth: 0, flex: '1 1 500px' }}>
             <h1 className="ui-page__title" style={{ fontSize: 32, marginBottom: 18 }}>{attempt.title}</h1>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -292,15 +288,18 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
                     type="button"
                     onClick={() => handleGoToQuestion(index)}
                     style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: 10,
-                      border: `1px solid ${isActive ? '#d6a76e' : isAnswered ? '#9bbc7c' : 'var(--ui-border-soft)'}`,
-                      background: isActive ? '#d6a76e' : isAnswered ? '#f4fbf0' : '#fffdfa',
-                      color: isActive ? '#ffffff' : 'var(--ui-text)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
+  width: 44,
+  height: 44,
+  borderRadius: 12,
+  border: `1px solid ${
+    isActive ? '#d6a06a' : isAnswered ? '#9bbc7c' : 'var(--ui-border-soft)'
+  }`,
+  background: isActive ? '#d6a76e' : isAnswered ? '#f4fbf0' : '#ffffff',
+  color: isActive ? '#ffffff' : 'var(--ui-text)',
+  fontWeight: 600,
+  cursor: 'pointer',
+  boxShadow: isActive ? '0 0 0 2px rgba(214, 160, 106, 0.12)' : 'none',
+}}
                   >
                     {index + 1}
                   </button>
@@ -347,8 +346,9 @@ function LearnerTestView({ test }: { test: TestDraftDto }) {
                     gap: 12,
                     alignItems: 'flex-start',
                     cursor: 'pointer',
-                    borderColor: selected ? '#d6a76e' : 'var(--ui-border-soft)',
-                    background: selected ? '#fff7ef' : '#fffdfa',
+                    borderColor: selected ? '#d6a06a' : 'var(--ui-border-soft)',
+                    background: '#ffffff',
+                    boxShadow: selected ? '0 0 0 2px rgba(214, 160, 106, 0.12)' : 'none',
                     padding: '16px 18px',
                   }}
                 >
@@ -770,7 +770,7 @@ export function TestDetailPage() {
                       className="ui-card ui-card--padded"
                       style={{
                         borderColor: option.is_correct ? 'var(--ui-success-border)' : 'var(--ui-border-soft)',
-                        background: option.is_correct ? 'var(--ui-success-bg)' : '#fffdfa',
+                        background: option.is_correct ? 'var(--ui-success-bg)' : '#ffffff',
                         padding: '14px 18px',
                       }}
                     >
