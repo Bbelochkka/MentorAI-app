@@ -19,3 +19,8 @@ dist/
 postgres_data/
 minio_data/
 redis_data/
+
+.env
+.env.local
+.env.render
+.env.production
