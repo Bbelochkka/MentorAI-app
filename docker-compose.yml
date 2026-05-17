@@ -92,3 +92,13 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+
+frontend:
+  build:
+    context: ./frontend
+  container_name: mentorai-frontend
+  restart: unless-stopped
+  ports:
+    - "80:80"
+  depends_on:
+    - content-service
